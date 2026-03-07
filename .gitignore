@@ -1,0 +1,23 @@
+# Python
+server/venv/
+server/__pycache__/
+server/.env
+*.pyc
+.env
+
+# Java / Gradle
+.gradle/
+build/
+run/
+.gradletasknamecache
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
