@@ -1,107 +1,146 @@
+"""
+Claude Craft — FastAPI WebSocket server powered by LangGraph.
+
+Handles text/binary WebSocket communication with the Minecraft client.
+All AI logic is delegated to the LangGraph agent pipeline.
+"""
+
 import os
 import logging
-import re
-import google.generativeai as genai
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 from urllib.parse import urlparse
 from openai import OpenAI
 
+import asyncio
+import json
+
+from graph import build_graph, AgentState
+from schematic_parser import parse_litematic
+
 load_dotenv()
 
-# Configure logging
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger("LitemodBackend")
+logger = logging.getLogger("ClaudeCraftServer")
 
-# Configure Gemini
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    logger.warning("GEMINI_API_KEY not found in environment. Gemini responses will fail.")
-else:
-    genai.configure(api_key=api_key)
+# ---------------------------------------------------------------------------
+# App + graph
+# ---------------------------------------------------------------------------
 
-# Perplexity Setup (Using OpenAI-compatible SDK)
-PPLX_API_KEY = os.getenv("PERPLEXITY_API_KEY")
-pplx_client = OpenAI(api_key=PPLX_API_KEY, base_url="https://api.perplexity.ai") if PPLX_API_KEY else None
+app = FastAPI(title="Claude Craft Server")
+agent = build_graph()
 
-# --- Constants & Helpers ---
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
-URL_REGEX = re.compile(r'(https?://[^\s]+)', re.IGNORECASE)
+# Delay between layers in seconds (controls build animation speed)
+LAYER_DELAY = 0.5
 
-def extract_image_urls(text: str) -> list[str]:
-    urls = URL_REGEX.findall(text)
-    return [url for url in urls if any(url.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)]
 
-def search_reference_images_with_perplexity(prompt: str) -> list[str]:
-    if not pplx_client:
-        return []
-    
-    # Perplexity is a text-model API. We ask it specifically for direct image links.
-    query = f"Provide a list of direct image URLs (ending in .jpg or .png) for: {prompt}"
-    
-    try:
-        response = pplx_client.chat.completions.create(
-            model="sonar-pro", # Or your preferred Perplexity model
-            messages=[{"role": "user", "content": query}]
-        )
-        content = response.choices[0].message.content
-        return extract_image_urls(content)
-    except Exception as e:
-        logger.error(f"Perplexity Search Error: {e}")
-        return []
-
-app = FastAPI()
-
-# Use the recommended Gemini model
-model = genai.GenerativeModel('gemini-1.5-flash')
-
-SYSTEM_PROMPT = """
-You are a helpful Minecraft assistant in the game.
-The user might ask you to load a schematic.
-If the user's message indicates they want to build or load something into the world (like a house, a tree, etc.), 
-your goal is to output exactly the following command:
-LOAD_SCHEMATIC <filename>
-Where <filename> is the name of the schematic they want without the .litematic extension.
-If they are just chatting, respond normally and concisely.
-"""
+# ---------------------------------------------------------------------------
+# WebSocket endpoint
+# ---------------------------------------------------------------------------
 
 @app.websocket("/")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    logger.info("New WebSocket connection established from Minecraft client.")
-    
-    # Start a chat session for this connection
-    chat_session = model.start_chat(history=[])
-    try:
-        chat_session.send_message(SYSTEM_PROMPT)
-        logger.info("System prompt initialized for new chat session.")
-    except Exception as e:
-        logger.error(f"Failed to initialize chat context: {e}")
+    logger.info("Minecraft client connected.")
+
+    # Per-connection chat history (persists across messages in one session)
+    chat_history: list[dict] = []
 
     try:
         while True:
             data = await websocket.receive_text()
-            logger.info(f"Received message from client: '{data}'")
+            logger.info(f">>> CLIENT: {data}")
+
+            # Build the initial state for this turn
+            state: AgentState = {
+                "user_message": data,
+                "chat_history": chat_history,
+                "intent": "",
+                "ai_response": "",
+                "schematic_name": None,
+                "schematic_path": None,
+                "build_plan": None,
+            }
 
             try:
-                # Send to Gemini
-                logger.info("Sending message to Gemini API...")
-                response = chat_session.send_message(data)
-                reply = response.text.strip()
-                logger.info(f"Gemini responded: '{reply}'")
-                await websocket.send_text(reply)
-                logger.info("Response sent to Minecraft client.")
+                # Run the LangGraph pipeline
+                result = agent.invoke(state)
+
+                # Persist updated history for next turn
+                chat_history = result.get("chat_history", chat_history)
+
+                # 1. Always send the text response first
+                ai_response = result.get("ai_response", "")
+                if ai_response:
+                    logger.info(f"<<< AI: {ai_response[:80]}...")
+                    await websocket.send_text(ai_response)
+
+                # 2. If a build was matched, stream it layer by layer
+                schematic_name = result.get("schematic_name")
+                schematic_path = result.get("schematic_path")
+
+                if schematic_name and schematic_path and os.path.isfile(schematic_path):
+                    try:
+                        parsed = parse_litematic(schematic_path)
+                        total_layers = parsed["total_layers"]
+
+                        # Send BUILD_START
+                        start_msg = json.dumps({
+                            "type": "BUILD_START",
+                            "name": parsed["name"],
+                            "totalLayers": total_layers,
+                        })
+                        await websocket.send_text(start_msg)
+                        logger.info(f"<<< BUILD_START: {total_layers} layers")
+
+                        # Stream each layer with a delay
+                        for i, layer_data in parsed["layers"].items():
+                            layer_msg = json.dumps({
+                                "type": "BUILD_LAYER",
+                                "layerIndex": int(i),
+                                "yLevel": layer_data["y_level"],
+                                "blocks": layer_data["blocks"],
+                            })
+                            await websocket.send_text(layer_msg)
+                            logger.info(
+                                f"<<< BUILD_LAYER {i}/{total_layers}: "
+                                f"Y={layer_data['y_level']}, {len(layer_data['blocks'])} blocks"
+                            )
+                            await asyncio.sleep(LAYER_DELAY)
+
+                        # Send BUILD_DONE
+                        done_msg = json.dumps({"type": "BUILD_DONE"})
+                        await websocket.send_text(done_msg)
+                        logger.info("<<< BUILD_DONE")
+
+                    except Exception as parse_err:
+                        logger.error(f"Schematic parse/stream error: {parse_err}", exc_info=True)
+                        await websocket.send_text(f"Error parsing schematic: {parse_err}")
+
+                elif schematic_name and not schematic_path:
+                    logger.warning(f"Schematic '{schematic_name}' matched but path missing.")
+
             except Exception as e:
-                logger.error(f"Gemini API Error: {e}")
-                await websocket.send_text("Sorry, I encountered an error communicating with Gemini.")
+                logger.error(f"Pipeline error: {e}", exc_info=True)
+                await websocket.send_text("Sorry, I encountered an error processing your request.")
 
     except WebSocketDisconnect:
         logger.info("Minecraft client disconnected.")
 
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Starting FastAPI server on ws://127.0.0.1:8081")
-    uvicorn.run(app, host="127.0.0.1", port=8081)
+    logger.info("Starting Claude Craft server on ws://127.0.0.1:8080")
+    uvicorn.run(app, host="127.0.0.1", port=8080)

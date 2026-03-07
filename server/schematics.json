@@ -1,0 +1,37 @@
+{
+    "Ivys_Starter_House-from-abfielder": {
+        "description": "A cozy two-story wooden starter house with oak planks, a pitched roof, and a small garden area. Great for beginners.",
+        "tags": [
+            "house",
+            "starter",
+            "wooden",
+            "small",
+            "cozy"
+        ]
+    },
+    "smallTest": {
+        "description": "A small test structure for debugging. Simple cube of mixed blocks.",
+        "tags": [
+            "test",
+            "small",
+            "debug"
+        ]
+    },
+    "mediumTest": {
+        "description": "A medium-sized test structure with multiple rooms and basic furniture layout.",
+        "tags": [
+            "test",
+            "medium",
+            "rooms"
+        ]
+    },
+    "largeTest": {
+        "description": "A large test structure with complex geometry, multiple floors, and varied block palette.",
+        "tags": [
+            "test",
+            "large",
+            "complex",
+            "multi-floor"
+        ]
+    }
+}
