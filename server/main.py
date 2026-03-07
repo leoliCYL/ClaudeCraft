@@ -10,6 +10,8 @@ import logging
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
+from urllib.parse import urlparse
+from openai import OpenAI
 
 import asyncio
 import json
@@ -140,6 +142,5 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-
     logger.info("Starting Claude Craft server on ws://127.0.0.1:8080")
     uvicorn.run(app, host="127.0.0.1", port=8080)
