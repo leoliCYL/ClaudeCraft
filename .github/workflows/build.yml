@@ -20,7 +20,7 @@ jobs:
           java-version: '21'
           distribution: 'microsoft'
       - name: make gradle wrapper executable
-        run: chmod +x ./gradlew
+        run: cd client && chmod +x ./gradlew
       - name: build
         run: ./gradlew build
       - name: capture build artifacts
