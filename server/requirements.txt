@@ -1,3 +1,8 @@
+langchain-google-genai>=2.0.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langgraph>=0.2.0
+faiss-cpu>=1.7.0
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.12.1
