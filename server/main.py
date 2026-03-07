@@ -1,8 +1,11 @@
 import os
 import logging
+import re
 import google.generativeai as genai
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
+from urllib.parse import urlparse
+from openai import OpenAI
 
 load_dotenv()
 
@@ -20,10 +23,40 @@ if not api_key:
 else:
     genai.configure(api_key=api_key)
 
+# Perplexity Setup (Using OpenAI-compatible SDK)
+PPLX_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+pplx_client = OpenAI(api_key=PPLX_API_KEY, base_url="https://api.perplexity.ai") if PPLX_API_KEY else None
+
+# --- Constants & Helpers ---
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+URL_REGEX = re.compile(r'(https?://[^\s]+)', re.IGNORECASE)
+
+def extract_image_urls(text: str) -> list[str]:
+    urls = URL_REGEX.findall(text)
+    return [url for url in urls if any(url.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)]
+
+def search_reference_images_with_perplexity(prompt: str) -> list[str]:
+    if not pplx_client:
+        return []
+    
+    # Perplexity is a text-model API. We ask it specifically for direct image links.
+    query = f"Provide a list of direct image URLs (ending in .jpg or .png) for: {prompt}"
+    
+    try:
+        response = pplx_client.chat.completions.create(
+            model="sonar-pro", # Or your preferred Perplexity model
+            messages=[{"role": "user", "content": query}]
+        )
+        content = response.choices[0].message.content
+        return extract_image_urls(content)
+    except Exception as e:
+        logger.error(f"Perplexity Search Error: {e}")
+        return []
+
 app = FastAPI()
 
 # Use the recommended Gemini model
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 SYSTEM_PROMPT = """
 You are a helpful Minecraft assistant in the game.
@@ -52,7 +85,7 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             logger.info(f"Received message from client: '{data}'")
-            
+
             try:
                 # Send to Gemini
                 logger.info("Sending message to Gemini API...")
@@ -70,5 +103,5 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Starting FastAPI server on ws://127.0.0.1:8080")
-    uvicorn.run(app, host="127.0.0.1", port=8080)
+    logger.info("Starting FastAPI server on ws://127.0.0.1:8081")
+    uvicorn.run(app, host="127.0.0.1", port=8081)
