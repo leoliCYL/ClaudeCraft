@@ -25,8 +25,9 @@ public class ChatOverlayScreen extends Screen {
     private static final int SIDEBAR_W     = 115;
     private static final int CHAT_W        = 280;
     private static final int TOTAL_W       = SIDEBAR_W + CHAT_W;
-    private static final int TOTAL_H       = 260;
+    private static final int TOTAL_H       = 270;  // extra 10px so buttons aren't clipped
     private static final int PAD           = 8;
+    private static final int BOT_PAD       = 10;   // extra bottom breathing room
     private static final int INPUT_H       = 20;
     private static final int BTN_H         = 20;
     private static final int BTN_W         = (CHAT_W - PAD * 2 - 4) / 2;
@@ -82,6 +83,8 @@ public class ChatOverlayScreen extends Screen {
 
     // ── Per-instance widgets ─────────────────────────────────────────────────
     private TextFieldWidget inputField;
+    private ButtonWidget    sendButton;
+    private ButtonWidget    buildButton;
 
     /** Index of the session currently being renamed, -1 = none. */
     private int renamingSession = -1;
@@ -184,7 +187,7 @@ public class ChatOverlayScreen extends Screen {
         int sl  = left();
         int pt  = top();
         int pb  = pt + TOTAL_H;
-        int btnY   = pb  - PAD - BTN_H;
+        int btnY   = pb  - BOT_PAD - BTN_H;
         int inputY = btnY - PAD - INPUT_H;
 
         // ── Chat input field
@@ -198,11 +201,15 @@ public class ChatOverlayScreen extends Screen {
         this.addSelectableChild(inputField);
         this.setInitialFocus(inputField);
 
-        // ── Send / Build buttons
-        this.addDrawableChild(ButtonWidget.builder(Text.literal("Send"), btn -> onSend())
-                .dimensions(cl + PAD, btnY, BTN_W, BTN_H).build());
-        this.addDrawableChild(ButtonWidget.builder(Text.literal("Build"), btn -> onBuild())
-                .dimensions(cl + PAD + BTN_W + 4, btnY, BTN_W, BTN_H).build());
+        // ── Send / Build buttons (start disabled — enabled once user types)
+        sendButton = ButtonWidget.builder(Text.literal("Send"), btn -> onSend())
+                .dimensions(cl + PAD, btnY, BTN_W, BTN_H).build();
+        buildButton = ButtonWidget.builder(Text.literal("Build"), btn -> onBuild())
+                .dimensions(cl + PAD + BTN_W + 4, btnY, BTN_W, BTN_H).build();
+        sendButton.active  = false;
+        buildButton.active = false;
+        this.addDrawableChild(sendButton);
+        this.addDrawableChild(buildButton);
 
         // ── "+ New Chat" button — sits below the "Conversations" header + divider
         int newBtnY = pt + 18;   // header text 9px + divider at 14 + 4 gap
@@ -266,6 +273,17 @@ public class ChatOverlayScreen extends Screen {
             renameField.setFocused(true);
             this.addDrawableChild(renameField);   // drawable = focus + render both work
             this.setFocused(renameField);
+        }
+    }
+
+    // ── Tick — keep button state in sync with input ──────────────────────────
+    @Override
+    public void tick() {
+        super.tick();
+        if (inputField != null && sendButton != null && buildButton != null) {
+            boolean hasText = !inputField.getText().trim().isEmpty();
+            sendButton.active  = hasText;
+            buildButton.active = hasText;
         }
     }
 
@@ -441,7 +459,7 @@ public class ChatOverlayScreen extends Screen {
                 connected ? 0xFF55FF55 : 0xFFFF5555, true);
 
         // ── Input area divider
-        int btnY   = pb - PAD - BTN_H;
+        int btnY   = pb - BOT_PAD - BTN_H;
         int inputY = btnY - PAD - INPUT_H;
         ctx.fill(cl + PAD, inputY - 4, cr - PAD, inputY - 3, C_DIVIDER);
 
