@@ -38,7 +38,10 @@ def extract_palette(state: dict) -> dict:
     # Images are already base64 data URLs from image_search — use directly
     content_parts = []
 
-    for data_url in reference_images:
+    for item in reference_images:
+        # Handle both the new dict format {"url": ..., "data": ...} and old string format
+        data_url = item.get("data") if isinstance(item, dict) else item
+        
         if data_url and data_url.startswith("data:"):
             content_parts.append({
                 "type": "image_url",

@@ -35,12 +35,16 @@ def _resolve_to_flat(build_json: dict) -> tuple[dict, list[dict]]:
         oy = placement["position"]["y"]
         oz = placement["position"]["z"]
         for z, z_slice in enumerate(comp["blocks"]):
+            size_y = len(z_slice)
             for y, y_row in enumerate(z_slice):
+                # Invert Y: JSON arrays are visually written top-down (idx 0 is roof).
+                # Minecraft Y goes bottom-up. So real_y = size_y - 1 - y.
+                real_y = (size_y - 1) - y
                 for x, idx in enumerate(y_row):
                     if idx == 0:  # skip air
                         continue
                     flat_blocks.append({
-                        "x": ox + x, "y": oy + y, "z": oz + z,
+                        "x": ox + x, "y": oy + real_y, "z": oz + z,
                         "block": palette_inv.get(idx, "minecraft:stone"),
                     })
 
