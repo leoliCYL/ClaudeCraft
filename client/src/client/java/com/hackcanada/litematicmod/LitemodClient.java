@@ -14,7 +14,6 @@ public class LitemodClient implements ClientModInitializer {
 
 	@Override
 	public void onInitializeClient() {
-		LitemodCommand.register();
 		registerKeybinds();
 	}
 

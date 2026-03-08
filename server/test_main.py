@@ -33,10 +33,37 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
+from google import genai
+
+load_dotenv()
 
 from lib.schematic_parser import parse_litematic
 
-load_dotenv()
+# ---------------------------------------------------------------------------
+# Gemini client
+# ---------------------------------------------------------------------------
+
+_gemini = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+
+SYSTEM_PROMPT = (
+    "You are ClaudeCraft, a helpful Minecraft assistant. "
+    "Answer questions about Minecraft clearly and concisely. "
+    "If the user asks to build something, say you are loading the schematic now. "
+    "Keep replies short (2-3 sentences max)."
+)
+
+def ask_gemini(user_message: str) -> str:
+    """Call Gemini and return a plain-text response."""
+    try:
+        prompt = f"{SYSTEM_PROMPT}\n\nPlayer: {user_message}\nClaudeCraft:"
+        response = _gemini.models.generate_content(
+            model="models/gemini-2.5-flash",
+            contents=prompt,
+        )
+        return response.text.strip()
+    except Exception as e:
+        logger.error(f"Gemini error: {e}")
+        return f"(AI unavailable: {e})"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -121,10 +148,12 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             logger.info(f">>> CLIENT: {data}")
 
-            # ── 1. Send stub AI text response ──────────────────────────────
-            stub_reply = f"[Test Server] Received: {data}"
-            await websocket.send_text(stub_reply)
-            logger.info(f"<<< STUB: {stub_reply}")
+            # ── 1. Get real AI response from Gemini ────────────────────────
+            ai_reply = await asyncio.get_event_loop().run_in_executor(
+                None, ask_gemini, data
+            )
+            await websocket.send_text(ai_reply)
+            logger.info(f"<<< GEMINI: {ai_reply}")
 
             # ── 2. Check if this is a build request ────────────────────────
             schematic_name, schematic_path = find_schematic(data, schematic_registry)
