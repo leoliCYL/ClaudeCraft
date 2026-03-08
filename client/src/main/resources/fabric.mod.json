@@ -1,8 +1,8 @@
 {
 	"schemaVersion": 1,
-	"id": "litemod",
+	"id": "claudecraft",
 	"version": "${version}",
-	"name": "Litemod",
+	"name": "Claude Craft",
 	"description": "A basic Mod for saving and loading Litematica files.",
 	"authors": [
 		"Me!"
@@ -12,22 +12,18 @@
 		"sources": "https://github.com/FabricMC/fabric-example-mod"
 	},
 	"license": "CC0-1.0",
-	"icon": "assets/litemod/icon.png",
+	"icon": "assets/claudecraft/icon.png",
 	"environment": "*",
 	"entrypoints": {
 		"main": [
-			"com.hackcanada.litematicmod.Litemod"
+			"com.hackcanada.claudecraft.ClaudeCraft"
 		],
 		"client": [
-			"com.hackcanada.litematicmod.LitemodClient"
+			"com.hackcanada.claudecraft.ClaudeCraftClient"
 		]
 	},
 	"mixins": [
-		"litemod.mixins.json",
-		{
-			"config": "litemod.client.mixins.json",
-			"environment": "client"
-		}
+		"claudecraft.mixins.json"
 	],
 	"depends": {
 		"fabricloader": ">=0.18.2",

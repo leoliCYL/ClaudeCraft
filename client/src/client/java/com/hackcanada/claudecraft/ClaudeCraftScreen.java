@@ -1,12 +1,13 @@
-package com.hackcanada.litematicmod;
+package com.hackcanada.claudecraft;
 
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.text.Text;
 
-public class LitemodScreen extends Screen {
-    public LitemodScreen() {
-        super(Text.literal("Litemod Actions"));
+public class ClaudeCraftScreen extends Screen {
+    protected ClaudeCraftScreen() {
+        super(Text.literal("ClaudeCraft Actions"));
+        ClaudeCraft.LOGGER.info("Opening ClaudeCraft Configuration Screen");
     }
 
     @Override

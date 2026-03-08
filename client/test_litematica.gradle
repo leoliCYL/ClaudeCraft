@@ -1,0 +1,4 @@
+dependencies {
+    compileOnly files("run/mods/litematica-fabric-1.21.11-0.26.0.jar")
+    compileOnly files("run/mods/malilib-fabric-1.21.11-0.27.6.jar")
+}

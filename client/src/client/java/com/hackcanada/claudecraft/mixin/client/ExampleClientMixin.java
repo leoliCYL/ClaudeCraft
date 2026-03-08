@@ -1,4 +1,4 @@
-package com.hackcanada.litematicmod.mixin.client;
+package com.hackcanada.claudecraft.mixin.client;
 
 import net.minecraft.client.MinecraftClient;
 import org.spongepowered.asm.mixin.Mixin;

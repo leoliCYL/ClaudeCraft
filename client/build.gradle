@@ -31,6 +31,8 @@ loom {
 }
 
 dependencies {
+modCompileOnly files("run/mods/litematica-fabric-1.21.11-0.26.0.jar")
+modCompileOnly files("run/mods/malilib-fabric-1.21.11-0.27.6.jar")
 	// To change the versions see the gradle.properties file
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	mappings "net.fabricmc:yarn:1.21.11+build.4:v2"
