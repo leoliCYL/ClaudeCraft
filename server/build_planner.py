@@ -31,12 +31,9 @@ class BuildPlannerState(TypedDict):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _llm() -> ChatGoogleGenerativeAI:
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=os.getenv("GEMINI_API_KEY"),
-        temperature=0.4,
-    )
+def _llm() -> object:
+    from lib.llm_factory import get_llm
+    return get_llm(temperature=0.4)
 
 
 def _image_to_content_part(path: str) -> dict:

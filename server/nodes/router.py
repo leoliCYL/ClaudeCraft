@@ -3,12 +3,11 @@ Router node — classifies user intent so the graph can branch.
 Uses keyword matching first (free), falls back to LLM for ambiguous cases.
 """
 
-import os
 import re
 import logging
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
+from lib.llm_factory import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +34,7 @@ def route_intent(state: dict) -> dict:
 
     # For ambiguous messages, use LLM
     try:
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
-            google_api_key=os.getenv("GEMINI_API_KEY"),
-            temperature=0.0,
-        )
+        llm = get_llm(temperature=0.0)
         result = llm.invoke([
             SystemMessage(content=_ROUTER_SYSTEM),
             HumanMessage(content=state["user_message"]),

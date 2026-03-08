@@ -39,6 +39,7 @@ class AgentState(TypedDict):
     # RAG path (existing schematics)
     schematic_name: Optional[str]
     schematic_path: Optional[str]
+    rag_score: Optional[float]
 
     # Generation pipeline
     reference_images: Optional[list]           # URLs/paths from image search
@@ -65,11 +66,14 @@ def _route_decision(state: AgentState) -> str:
 def _build_decision(state: AgentState) -> str:
     """
     After the build node (RAG check):
-    - If a schematic was found via RAG -> 'rag_hit' (stream existing file)
-    - If no match -> 'generate' (run the generation pipeline)
+    - If a schematic was found via RAG with high confidence -> 'rag_hit'
+    - Otherwise -> 'generate' (run the generation pipeline)
     """
-    if state.get("schematic_path"):
+    score = state.get("rag_score", 0.0)
+    if state.get("schematic_path") and score >= 0.7:
+        logger.info(f"RAG score {score:.3f} >= 0.7 — using existing schematic")
         return "rag_hit"
+    logger.info(f"RAG score {score:.3f} < 0.7 — entering generation pipeline")
     return "generate"
 
 
