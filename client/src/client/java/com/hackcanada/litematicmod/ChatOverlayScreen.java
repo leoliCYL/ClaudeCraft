@@ -3,6 +3,9 @@ package com.hackcanada.litematicmod;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
+import com.hackcanada.claudecraft.BackendClient;
+import com.hackcanada.claudecraft.ClaudeCraft;
+import com.hackcanada.claudecraft.SchematicHelper;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
@@ -43,15 +46,24 @@ public class ChatOverlayScreen extends Screen {
     private static final int ROW_START_OFF = 14 + 4 + BTN_H + 6; // offset from pt
 
     // Colors
-    private static final int C_WHITE      = 0xFFFFFFFF;
-    private static final int C_AI         = 0xFFCC77FF;
-    private static final int C_SYS        = 0xFFAAAAAA;
-    private static final int C_CHAT_BG    = (int) 0xEE0D0D14;
-    private static final int C_SIDEBAR_BG = (int) 0xEE07070E;
-    private static final int C_DIVIDER    = (int) 0x55FFFFFF;
-    private static final int C_ROW_ACT    = (int) 0xFF1E3A5F;
-    private static final int C_HDR        = 0xFF8888AA;
-    private static final int C_RENAME_BG  = (int) 0xFF0D2040;
+    private static final int C_WHITE        = 0xFFFFFFFF;
+    private static final int C_AI           = 0xFFCC77FF;
+    private static final int C_SYS          = 0xFFAAAAAA;
+    private static final int C_CHAT_BG      = (int) 0xEE0D0D14;
+    private static final int C_SIDEBAR_BG   = (int) 0xEE07070E;
+    private static final int C_DIVIDER      = (int) 0x55FFFFFF;
+    private static final int C_ROW_ACT      = (int) 0xFF1E3A5F;
+    private static final int C_HDR          = 0xFF8888AA;
+    private static final int C_RENAME_BG    = (int) 0xFF0D2040;
+    private static final int C_TAB_ACT      = (int) 0xFF1A2A4A;
+    private static final int C_TAB_INACTIVE = (int) 0xFF0D1020;
+
+    // ── Tab state ────────────────────────────────────────────────────────────
+    /** 0 = Chat tab, 1 = Schematic tab */
+    private static int activeTab = 0;
+
+    // ── Schematic panel state ────────────────────────────────────────────────
+    private TextFieldWidget schematicField;
 
     // ── Persistence ─────────────────────────────────────────────────────────
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -132,7 +144,7 @@ public class ChatOverlayScreen extends Screen {
                     return;
                 }
             } catch (Exception ignored) {}
-            Litemod.LOGGER.warn("Could not load chat history: {}", e.getMessage());
+            ClaudeCraft.LOGGER.warn("Could not load chat history: {}", e.getMessage());
         }
         newSession();
     }
@@ -148,7 +160,7 @@ public class ChatOverlayScreen extends Screen {
                 GSON.toJson(data, w);
             }
         } catch (Exception e) {
-            Litemod.LOGGER.warn("Could not save chat history: {}", e.getMessage());
+            ClaudeCraft.LOGGER.warn("Could not save chat history: {}", e.getMessage());
         }
     }
 
@@ -205,26 +217,69 @@ public class ChatOverlayScreen extends Screen {
         int btnY   = pb  - BOT_PAD - BTN_H;
         int inputY = btnY - PAD - INPUT_H;
 
-        // ── Chat input field
-        inputField = new TextFieldWidget(
-                this.textRenderer, cl + PAD, inputY,
-                CHAT_W - PAD * 2, INPUT_H,
-                Text.literal("Message ClaudeCraft..."));
-        inputField.setMaxLength(512);
-        inputField.setDrawsBackground(true);
-        inputField.setPlaceholder(Text.literal("Message ClaudeCraft..."));
-        this.addSelectableChild(inputField);
-        this.setInitialFocus(inputField);
+        // ── Tab buttons (Chat | Schematic) ───────────────────────────────────
+        int tabW = (CHAT_W - PAD * 2) / 2;
+        int tabY = pt + 1;
+        this.addDrawableChild(ButtonWidget.builder(Text.literal("Chat"), btn -> {
+            activeTab = 0;
+            this.clearAndInit();
+        }).dimensions(cl + PAD, tabY, tabW - 2, 16).build());
+        this.addDrawableChild(ButtonWidget.builder(Text.literal("Schematic"), btn -> {
+            activeTab = 1;
+            this.clearAndInit();
+        }).dimensions(cl + PAD + tabW, tabY, tabW - 2, 16).build());
 
-        // ── Send / Build buttons (start disabled — enabled once user types)
-        sendButton = ButtonWidget.builder(Text.literal("Send"), btn -> onSend())
-                .dimensions(cl + PAD, btnY, BTN_W, BTN_H).build();
-        buildButton = ButtonWidget.builder(Text.literal("Build"), btn -> onBuild())
-                .dimensions(cl + PAD + BTN_W + 4, btnY, BTN_W, BTN_H).build();
-        sendButton.active  = false;
-        buildButton.active = false;
-        this.addDrawableChild(sendButton);
-        this.addDrawableChild(buildButton);
+        if (activeTab == 0) {
+            // ── CHAT TAB ─────────────────────────────────────────────────────
+
+            // ── Chat input field
+            inputField = new TextFieldWidget(
+                    this.textRenderer, cl + PAD, inputY,
+                    CHAT_W - PAD * 2, INPUT_H,
+                    Text.literal("Message ClaudeCraft..."));
+            inputField.setMaxLength(512);
+            inputField.setDrawsBackground(true);
+            inputField.setPlaceholder(Text.literal("Message ClaudeCraft..."));
+            this.addSelectableChild(inputField);
+            this.setInitialFocus(inputField);
+
+            // ── Send / Build buttons
+            sendButton = ButtonWidget.builder(Text.literal("Send"), btn -> onSend())
+                    .dimensions(cl + PAD, btnY, BTN_W, BTN_H).build();
+            buildButton = ButtonWidget.builder(Text.literal("Build"), btn -> onBuild())
+                    .dimensions(cl + PAD + BTN_W + 4, btnY, BTN_W, BTN_H).build();
+            sendButton.active  = false;
+            buildButton.active = false;
+            this.addDrawableChild(sendButton);
+            this.addDrawableChild(buildButton);
+
+        } else {
+            // ── SCHEMATIC TAB ─────────────────────────────────────────────────
+            inputField = null; sendButton = null; buildButton = null;
+
+            // Instructions label is drawn in render()
+            // Schematic name / paste field
+            int fieldY = pt + 40;
+            schematicField = new TextFieldWidget(
+                    this.textRenderer, cl + PAD, fieldY,
+                    CHAT_W - PAD * 2, INPUT_H,
+                    Text.literal("Schematic name..."));
+            schematicField.setMaxLength(256);
+            schematicField.setDrawsBackground(true);
+            schematicField.setPlaceholder(Text.literal("Paste schematic name here..."));
+            this.addDrawableChild(schematicField);
+            this.setInitialFocus(schematicField);
+
+            // Load button
+            int loadBtnY = fieldY + INPUT_H + 6;
+            this.addDrawableChild(ButtonWidget.builder(Text.literal("Load Schematic"), btn -> onLoadSchematic())
+                    .dimensions(cl + PAD, loadBtnY, CHAT_W - PAD * 2, BTN_H).build());
+
+            // Build via AI button
+            int buildAiBtnY = loadBtnY + BTN_H + 4;
+            this.addDrawableChild(ButtonWidget.builder(Text.literal("Build via AI"), btn -> onBuildSchematic())
+                    .dimensions(cl + PAD, buildAiBtnY, CHAT_W - PAD * 2, BTN_H).build());
+        }
 
         // ── "+ New Chat" button — sits below the "Chats" header + divider
         int newBtnY = pt + 18;   // header text 9px + divider at 14 + 4 gap
@@ -295,7 +350,7 @@ public class ChatOverlayScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
-        if (inputField != null && sendButton != null && buildButton != null) {
+        if (activeTab == 0 && inputField != null && sendButton != null && buildButton != null) {
             boolean hasText = !inputField.getText().trim().isEmpty();
             sendButton.active  = hasText;
             buildButton.active = hasText;
@@ -316,7 +371,7 @@ public class ChatOverlayScreen extends Screen {
                     ChatOverlayScreen::handleIncomingMessage);
             persistentClient.connect();
         } catch (URISyntaxException e) {
-            Litemod.LOGGER.error("Invalid WebSocket URI", e);
+            ClaudeCraft.LOGGER.error("Invalid WebSocket URI", e);
         }
     }
 
@@ -329,7 +384,7 @@ public class ChatOverlayScreen extends Screen {
                 MinecraftClient mc = MinecraftClient.getInstance();
                 if (mc.player != null) {
                     mc.player.sendMessage(Text.literal("[ClaudeCraft] Loading: " + fn), false);
-                    LitematicaHelper.loadLitematica(mc.world, mc.player.getBlockPos(), fn);
+                    SchematicHelper.loadLitematica(mc.world, mc.player.getBlockPos(), fn);
                 }
             } else {
                 addMessage("AI: " + message);
@@ -367,6 +422,43 @@ public class ChatOverlayScreen extends Screen {
             ensureConnected();
         }
         inputField.setText("");
+    }
+
+    // ── Schematic tab actions ────────────────────────────────────────────────
+    private void onLoadSchematic() {
+        String name = schematicField != null ? schematicField.getText().trim() : "";
+        if (name.isEmpty()) {
+            addMessage("[System] Enter a schematic name first.");
+            activeTab = 0; this.clearAndInit(); return;
+        }
+        // Strip trailing .litematic if user included it
+        if (name.endsWith(".litematic")) name = name.substring(0, name.length() - 10);
+        addMessage("[Schematic] Loading: " + name);
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.player != null) {
+            mc.player.sendMessage(Text.literal("[ClaudeCraft] Loading: " + name), false);
+            SchematicHelper.loadLitematica(mc.world, mc.player.getBlockPos(), name);
+        } else {
+            addMessage("[System] Join a world first!");
+        }
+        activeTab = 0; this.clearAndInit();
+    }
+
+    private void onBuildSchematic() {
+        String name = schematicField != null ? schematicField.getText().trim() : "";
+        if (name.isEmpty()) {
+            addMessage("[System] Enter a schematic name first.");
+            return;
+        }
+        // Send to AI as a build request so server streams BUILD_LAYER packets
+        ensureConnected();
+        String msg = "Build " + name;
+        addMessage("[Build] " + msg);
+        if (persistentClient != null && persistentClient.isOpen())
+            persistentClient.send("[BUILD] " + msg);
+        else
+            addMessage("[System] Not connected \u2014 start the server first!");
+        activeTab = 0; this.clearAndInit();
     }
 
     public static void addMessage(String msg) {
@@ -407,7 +499,14 @@ public class ChatOverlayScreen extends Screen {
             return super.keyPressed(input);
         }
 
-        if (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER) {
+        // Schematic tab: Enter = load
+        if (activeTab == 1 && schematicField != null && schematicField.isFocused()) {
+            if (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER) {
+                onLoadSchematic(); return true;
+            }
+        }
+
+        if (activeTab == 0 && (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER)) {
             onSend(); return true;
         }
         return super.keyPressed(input);
@@ -463,49 +562,67 @@ public class ChatOverlayScreen extends Screen {
         // ── Chat panel background
         ctx.fill(cl, pt, cr, pb, C_CHAT_BG);
 
-        // ── Chat header bar
+        // ── Tab bar background + active highlight
+        int tabW = (CHAT_W - PAD * 2) / 2;
         ctx.fill(cl, pt, cr, pt + 18, (int) 0xEE111118);
-        String hdrName = allSessions.isEmpty() ? "New Chat" : allSessions.get(activeSession).name;
-        ctx.drawText(this.textRenderer, hdrName, cl + PAD, pt + 5, C_WHITE, false);
+        // Active tab underline
+        if (activeTab == 0)
+            ctx.fill(cl + PAD, pt + 15, cl + PAD + tabW - 2, pt + 17, C_AI);
+        else
+            ctx.fill(cl + PAD + tabW, pt + 15, cl + PAD + tabW * 2 - 2, pt + 17, C_AI);
 
-        // ── Connection dot
+        // ── Connection dot (top-right)
         boolean connected = persistentClient != null && persistentClient.isOpen();
         ctx.drawText(this.textRenderer, "\u25CF", cr - 14, pt + 5,
                 connected ? 0xFF55FF55 : 0xFFFF5555, true);
 
-        // ── Input area divider
-        int btnY   = pb - BOT_PAD - BTN_H;
-        int inputY = btnY - PAD - INPUT_H;
-        ctx.fill(cl + PAD, inputY - 4, cr - PAD, inputY - 3, C_DIVIDER);
+        if (activeTab == 0) {
+            // ── CHAT PANEL ───────────────────────────────────────────────────
 
-        // ── Chat history
-        int textTop    = pt + 22;
-        int textBottom = inputY - 6;
-        int maxTextW   = CHAT_W - PAD * 2;
+            // ── Input area divider
+            int btnY   = pb - BOT_PAD - BTN_H;
+            int inputY = btnY - PAD - INPUT_H;
+            ctx.fill(cl + PAD, inputY - 4, cr - PAD, inputY - 3, C_DIVIDER);
 
-        List<String[]> lines = new ArrayList<>();
-        for (String msg : currentMessages()) {
-            String prefix = msg.startsWith("AI: ")  ? "AI"  :
-                            msg.startsWith("You: ") ? "You" : "Sys";
-            List<String> wrapped = wrapText(msg, maxTextW);
-            for (int i = 0; i < wrapped.size(); i++)
-                lines.add(new String[]{ i == 0 ? prefix : "", wrapped.get(i) });
+            // ── Chat history
+            int textTop    = pt + 22;
+            int textBottom = inputY - 6;
+            int maxTextW   = CHAT_W - PAD * 2;
+
+            List<String[]> lines = new ArrayList<>();
+            for (String msg : currentMessages()) {
+                String prefix = msg.startsWith("AI: ")  ? "AI"  :
+                                msg.startsWith("You: ") ? "You" : "Sys";
+                List<String> wrapped = wrapText(msg, maxTextW);
+                for (int i = 0; i < wrapped.size(); i++)
+                    lines.add(new String[]{ i == 0 ? prefix : "", wrapped.get(i) });
+            }
+
+            int maxLines = (textBottom - textTop) / LINE_H;
+            int start    = Math.max(0, lines.size() - maxLines);
+            int y = textTop;
+            for (int i = start; i < lines.size(); i++) {
+                String[] e = lines.get(i);
+                int color = "AI".equals(e[0])  ? C_AI   :
+                            "You".equals(e[0]) ? C_WHITE : C_SYS;
+                ctx.drawText(this.textRenderer, e[1], cl + PAD, y, color, true);
+                y += LINE_H;
+            }
+
+        } else {
+            // ── SCHEMATIC PANEL ──────────────────────────────────────────────
+            int tx = cl + PAD;
+            int ty = pt + 22;
+            ctx.drawText(this.textRenderer, "Load a Schematic", tx, ty, C_AI, false);
+            ctx.drawText(this.textRenderer, "Paste the schematic name below.", tx, ty + 12, C_SYS, false);
+            ctx.drawText(this.textRenderer, "(without .litematic extension)", tx, ty + 22, C_SYS, false);
+            ctx.drawText(this.textRenderer, "Load  \u2192 places at your feet via Litematica", tx, ty + 36 + INPUT_H + 6 + BTN_H + 8, C_SYS, false);
+            ctx.drawText(this.textRenderer, "Build \u2192 streams layers from AI server", tx, ty + 36 + INPUT_H + 6 + BTN_H + 20, C_SYS, false);
         }
 
-        int maxLines = (textBottom - textTop) / LINE_H;
-        int start    = Math.max(0, lines.size() - maxLines);
-        int y = textTop;
-        for (int i = start; i < lines.size(); i++) {
-            String[] e = lines.get(i);
-            int color = "AI".equals(e[0])  ? C_AI   :
-                        "You".equals(e[0]) ? C_WHITE : C_SYS;
-            ctx.drawText(this.textRenderer, e[1], cl + PAD, y, color, true);
-            y += LINE_H;
-        }
-
-        // ── Widgets (buttons, input field, rename field)
+        // ── Widgets (buttons, input field, rename field, schematic field)
         super.render(ctx, mouseX, mouseY, delta);
-        inputField.render(ctx, mouseX, mouseY, delta);
+        if (inputField != null) inputField.render(ctx, mouseX, mouseY, delta);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
