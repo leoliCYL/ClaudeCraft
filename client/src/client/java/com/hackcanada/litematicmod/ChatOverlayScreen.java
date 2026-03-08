@@ -2,6 +2,9 @@ package com.hackcanada.litematicmod;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
 import com.hackcanada.claudecraft.BackendClient;
 import com.hackcanada.claudecraft.ClaudeCraft;
@@ -13,6 +16,7 @@ import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.client.input.KeyInput;
 import net.minecraft.text.Text;
+import net.minecraft.util.math.BlockPos;
 import org.lwjgl.glfw.GLFW;
 
 import java.io.*;
@@ -64,6 +68,16 @@ public class ChatOverlayScreen extends Screen {
 
     // ── Schematic panel state ────────────────────────────────────────────────
     private TextFieldWidget schematicField;
+
+    // ── Streaming build state (BUILD_START … BUILD_LAYER … BUILD_DONE) ───────
+    /** Name of the schematic currently being streamed, or null when idle. */
+    private static String buildingName = null;
+    /** Accumulated blocks from BUILD_LAYER packets: list of {x,y,z,block} JsonObjects. */
+    private static final List<JsonObject> pendingBlocks = new ArrayList<>();
+    /** Number of layers expected (from BUILD_START). */
+    private static int buildTotalLayers = 0;
+    /** Number of BUILD_LAYER packets received so far. */
+    private static int buildLayersReceived = 0;
 
     // ── Persistence ─────────────────────────────────────────────────────────
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -378,18 +392,199 @@ public class ChatOverlayScreen extends Screen {
     // ── Messages ─────────────────────────────────────────────────────────────
     private static void handleIncomingMessage(String message) {
         MinecraftClient.getInstance().execute(() -> {
+            // ── Legacy plain-text LOAD_SCHEMATIC command ───────────────────
             if (message.startsWith("LOAD_SCHEMATIC ")) {
                 String fn = message.substring("LOAD_SCHEMATIC ".length()).trim();
-                addMessage("AI: Loading schematic: " + fn);
+                addMessage("[Schematic] Loading: " + fn);
                 MinecraftClient mc = MinecraftClient.getInstance();
                 if (mc.player != null) {
                     mc.player.sendMessage(Text.literal("[ClaudeCraft] Loading: " + fn), false);
                     SchematicHelper.loadLitematica(mc.world, mc.player.getBlockPos(), fn);
                 }
-            } else {
-                addMessage("AI: " + message);
+                return;
             }
+
+            // ── Try to parse as JSON (BUILD_START / BUILD_LAYER / BUILD_DONE) ─
+            if (message.startsWith("{")) {
+                try {
+                    JsonObject obj = JsonParser.parseString(message).getAsJsonObject();
+                    String type = obj.has("type") ? obj.get("type").getAsString() : "";
+
+                    switch (type) {
+                        case "BUILD_START": {
+                            buildingName        = obj.has("name") ? obj.get("name").getAsString() : "streamed";
+                            buildTotalLayers    = obj.has("totalLayers") ? obj.get("totalLayers").getAsInt() : 0;
+                            buildLayersReceived = 0;
+                            pendingBlocks.clear();
+                            addMessage("[Build] Starting: " + buildingName
+                                    + " (" + buildTotalLayers + " layers)");
+                            return;
+                        }
+                        case "BUILD_LAYER": {
+                            if (obj.has("blocks")) {
+                                JsonArray blocks = obj.get("blocks").getAsJsonArray();
+                                blocks.forEach(e -> pendingBlocks.add(e.getAsJsonObject()));
+                            }
+                            buildLayersReceived++;
+                            // Progress update every 10 layers
+                            if (buildTotalLayers > 0 && buildLayersReceived % 10 == 0) {
+                                addMessage("[Build] Layer " + buildLayersReceived
+                                        + "/" + buildTotalLayers);
+                            }
+                            return;
+                        }
+                        case "BUILD_DONE": {
+                            // All layers received — write a .litematic file then load it
+                            String name = buildingName != null ? buildingName : "streamed";
+                            addMessage("[Build] Done! " + pendingBlocks.size()
+                                    + " blocks — loading via Litematica…");
+                            writeLitematicAndLoad(name, new ArrayList<>(pendingBlocks));
+                            buildingName = null;
+                            pendingBlocks.clear();
+                            return;
+                        }
+                        default:
+                            break;
+                    }
+                } catch (Exception e) {
+                    ClaudeCraft.LOGGER.warn("Could not parse incoming JSON: " + e.getMessage());
+                }
+            }
+
+            // ── Plain-text AI chat reply ───────────────────────────────────
+            addMessage("AI: " + message);
         });
+    }
+
+    /**
+     * Converts the accumulated list of block JsonObjects into a real .litematic
+     * file (written to {@code .minecraft/litematics/<name>.litematic}), then
+     * calls {@link SchematicHelper#loadLitematica} to register it in Litematica
+     * at the player's current feet position.
+     *
+     * <p>Each JsonObject must have integer fields {@code x}, {@code y}, {@code z}
+     * and a string field {@code block} (e.g. {@code "minecraft:oak_log[axis=y]"}).
+     * All coordinates are treated as relative offsets from the origin.</p>
+     */
+    private static void writeLitematicAndLoad(String name, List<JsonObject> blocks) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.player == null) {
+            addMessage("[System] Join a world before building!");
+            return;
+        }
+
+        BlockPos origin = mc.player.getBlockPos();
+
+        // Find the bounding box of all blocks
+        int minX = 0, minY = 0, minZ = 0;
+        int maxX = 0, maxY = 0, maxZ = 0;
+        for (JsonObject b : blocks) {
+            int x = b.get("x").getAsInt();
+            int y = b.get("y").getAsInt();
+            int z = b.get("z").getAsInt();
+            if (x < minX) minX = x; if (x > maxX) maxX = x;
+            if (y < minY) minY = y; if (y > maxY) maxY = y;
+            if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+        }
+
+        int sizeX = maxX - minX + 1;
+        int sizeY = maxY - minY + 1;
+        int sizeZ = maxZ - minZ + 1;
+
+        // Build a palette and index array
+        List<String>  palette  = new ArrayList<>();
+        int[]         indices  = new int[sizeX * sizeY * sizeZ];
+        java.util.Arrays.fill(indices, 0);           // default = air
+        palette.add("minecraft:air");
+
+        for (JsonObject b : blocks) {
+            int x     = b.get("x").getAsInt() - minX;
+            int y     = b.get("y").getAsInt() - minY;
+            int z     = b.get("z").getAsInt() - minZ;
+            String id = b.get("block").getAsString();
+            if (id.equals("minecraft:air")) continue;
+            int palIdx = palette.indexOf(id);
+            if (palIdx < 0) { palIdx = palette.size(); palette.add(id); }
+            int flatIdx = y * sizeZ * sizeX + z * sizeX + x;
+            if (flatIdx >= 0 && flatIdx < indices.length) indices[flatIdx] = palIdx;
+        }
+
+        // Pack into a .litematic NBT and write to disk, then load
+        try {
+            int bitsPerEntry = Math.max(2,
+                    Integer.SIZE - Integer.numberOfLeadingZeros(palette.size() - 1));
+            long[] packed = packBitsForLitematic(indices, bitsPerEntry);
+
+            net.minecraft.nbt.NbtCompound root    = new net.minecraft.nbt.NbtCompound();
+            root.putInt("MinecraftDataVersion", 3953);
+            root.putInt("Version", 6);
+
+            net.minecraft.nbt.NbtCompound meta = new net.minecraft.nbt.NbtCompound();
+            meta.putString("Author", "ClaudeCraft");
+            meta.putString("Name", name);
+            meta.putLong("TimeCreated", System.currentTimeMillis());
+            meta.putLong("TimeModified", System.currentTimeMillis());
+            net.minecraft.nbt.NbtCompound encSize = new net.minecraft.nbt.NbtCompound();
+            encSize.putInt("x", sizeX); encSize.putInt("y", sizeY); encSize.putInt("z", sizeZ);
+            meta.put("EnclosingSize", encSize);
+            meta.putInt("TotalBlocks", blocks.size());
+            meta.putInt("TotalVolume", sizeX * sizeY * sizeZ);
+            root.put("Metadata", meta);
+
+            net.minecraft.nbt.NbtCompound region = new net.minecraft.nbt.NbtCompound();
+            net.minecraft.nbt.NbtCompound pos = new net.minecraft.nbt.NbtCompound();
+            pos.putInt("x", 0); pos.putInt("y", 0); pos.putInt("z", 0);
+            region.put("Position", pos);
+            net.minecraft.nbt.NbtCompound sz = new net.minecraft.nbt.NbtCompound();
+            sz.putInt("x", sizeX); sz.putInt("y", sizeY); sz.putInt("z", sizeZ);
+            region.put("Size", sz);
+
+            net.minecraft.nbt.NbtList paletteNbt = new net.minecraft.nbt.NbtList();
+            for (String blockId : palette) {
+                // Strip block state properties for the palette entry name
+                String paletteName = blockId.contains("[") ? blockId.substring(0, blockId.indexOf('[')) : blockId;
+                net.minecraft.nbt.NbtCompound entry = new net.minecraft.nbt.NbtCompound();
+                entry.putString("Name", paletteName);
+                paletteNbt.add(entry);
+            }
+            region.put("BlockStatePalette", paletteNbt);
+            region.putLongArray("BlockStates", packed);
+            region.put("Entities",           new net.minecraft.nbt.NbtList());
+            region.put("PendingBlockTicks",   new net.minecraft.nbt.NbtList());
+            region.put("PendingFluidTicks",   new net.minecraft.nbt.NbtList());
+            region.put("TileEntities",        new net.minecraft.nbt.NbtList());
+
+            net.minecraft.nbt.NbtCompound regions = new net.minecraft.nbt.NbtCompound();
+            regions.put(name, region);
+            root.put("Regions", regions);
+
+            java.io.File dir  = new java.io.File(mc.runDirectory, "litematics");
+            dir.mkdirs();
+            java.io.File file = new java.io.File(dir, name + ".litematic");
+            net.minecraft.nbt.NbtIo.writeCompressed(root, file.toPath());
+
+            ClaudeCraft.LOGGER.info("Wrote streamed schematic to " + file.getAbsolutePath());
+            SchematicHelper.loadLitematica(mc.world, origin, name);
+
+        } catch (Exception e) {
+            ClaudeCraft.LOGGER.error("Failed to write streamed schematic", e);
+            addMessage("[System] Error writing schematic: " + e.getMessage());
+        }
+    }
+
+    /** Same bit-packing used by Litematica / SchematicHelper.saveLitematica. */
+    private static long[] packBitsForLitematic(int[] indices, int bitsPerEntry) {
+        long[] result = new long[(indices.length * bitsPerEntry + 63) / 64];
+        for (int i = 0; i < indices.length; i++) {
+            int value     = indices[i];
+            int bitIndex  = i * bitsPerEntry;
+            int longIndex = bitIndex / 64;
+            int bitOffset = bitIndex % 64;
+            result[longIndex] |= ((long) value) << bitOffset;
+            if (bitOffset + bitsPerEntry > 64 && longIndex + 1 < result.length)
+                result[longIndex + 1] |= ((long) value) >>> (64 - bitOffset);
+        }
+        return result;
     }
 
     private void onSend() {
