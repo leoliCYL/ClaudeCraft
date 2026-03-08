@@ -141,3 +141,64 @@ ALLOWED BLOCKS:
 {MINECRAFT_BLOCKS_STR}
 
 Output ONLY a numbered list of 15 blocks (1-15). No intro, no explanation. Only blocks from the list above."""
+
+
+def component_planner_prompt(goal: str, palette: list[str], max_components: int = 6) -> str:
+    """Build the component planner prompt."""
+    full_palette = ["minecraft:air"] + palette
+
+    return f"""You are an expert Minecraft architectural designer.
+Your goal is to build a: {goal}.
+
+You must design modular structural components for this build.
+Design the sizes in 3 dimensions matched to human-size proportions (1 block = 1 cubic meter).
+
+CRITICAL CONSTRAINTS:
+1. You MUST generate STRICTLY FEWER THAN {max_components + 1} components.
+2. Use as few components as possible while maintaining the most architectural impact.
+3. Group smaller details into larger macro-structures.
+
+PRIMARY PALETTE (air is index 0):
+{full_palette}
+
+ALLOWED EXTRA BLOCKS (use sparingly):
+{MINECRAFT_BLOCKS_STR}
+
+Return a raw JSON array. Each object must follow this schema:
+[
+  {{
+    "component_name": "String",
+    "description": "String describing the component and its purpose",
+    "dimensions": {{ "X": Integer, "Y": Integer, "Z": Integer }},
+    "blocks": ["minecraft:block_id", "minecraft:block_id"]
+  }}
+]"""
+
+
+def component_builder_prompt(comp_name: str, desc: str, x: int, y: int, z: int, materials: list[str]) -> str:
+    """Build the component builder prompt."""
+    mat_list = "\n".join(f"{i+1} = {mat}" for i, mat in enumerate(materials))
+    return f"""You are an expert Minecraft architectural designer.
+You are building a specific structural component for a larger build.
+
+COMPONENT: {comp_name}
+DESCRIPTION: {desc}
+DIMENSIONS: Width (X) = {x}, Height (Y) = {y}, Depth (Z) = {z}
+
+MATERIALS PALETTE:
+0 = minecraft:air
+{mat_list}
+
+INSTRUCTIONS:
+Produce a 3D grid of integers representing the block IDs.
+The grid must be a JSON array of Z (depth) slices.
+Each Z slice is an array of Y (height) rows. (Index 0 is the top/roof, index {y-1} is the bottom/floor)
+Each Y row is an array of X (width) integers.
+The structure MUST have exactly {z} slices, {y} rows per slice, and {x} columns per row.
+Use the materials palette to build intricate details and realistic architecture matching the reference images.
+
+Return ONLY the raw 3D JSON integer array. No markdown, no explanation. Example format for 2x2x2:
+[
+  [ [1, 1], [1, 0] ],
+  [ [2, 2], [0, 0] ]
+]"""

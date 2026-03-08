@@ -8,7 +8,8 @@ Graph flow:
 """
 
 import logging
-from typing import Optional, TypedDict
+import operator
+from typing import Annotated, Optional, TypedDict
 
 from langgraph.graph import StateGraph, END, START
 from langgraph.constants import Send
@@ -31,6 +32,14 @@ THRESHOLD = 0.9
 # Shared state schema
 # ---------------------------------------------------------------------------
 
+def _merge_dicts(d1: Optional[dict], d2: Optional[dict]) -> dict:
+    """Merge two dictionaries. Used to combine palette_maps from parallel builders."""
+    res = dict(d1) if d1 else {}
+    if d2:
+        res.update(d2)
+    return res
+
+
 class AgentState(TypedDict):
     # Core
     user_message: str
@@ -46,8 +55,9 @@ class AgentState(TypedDict):
     # Generation pipeline
     reference_images: Optional[list]           # URLs/paths from image search
     block_palette: Optional[list]              # block IDs + usage hints
+    palette_map: Annotated[dict, _merge_dicts] # merged across parallel builders ({idx: block_name})
     components: Optional[list]                 # component specs from planner
-    component_results: Optional[list]          # built component block data
+    component_results: Annotated[list, operator.add]  # merged across parallel builders
     combined_blocks: Optional[list]            # merged block list
     build_json: Optional[dict]                 # full JSON {palette, components, placements}
     build_layers: Optional[dict]               # Y-grouped layers for streaming

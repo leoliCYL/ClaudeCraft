@@ -75,6 +75,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 "ai_response": "",
                 "schematic_name": None,
                 "schematic_path": None,
+                "rag_score": None,
+                "reference_images": None,
+                "block_palette": None,
+                "palette_map": None,
+                "components": None,
+                "component_results": [],
+                "combined_blocks": None,
+                "build_json": None,
+                "build_layers": None,
+                "total_layers": None,
                 "build_plan": None,
             }
 
@@ -150,9 +160,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # Node names that carry interesting pipeline state worth printing
 _E2E_DISPLAY_NODES = {
-    "image_search": ("Reference images", "reference_images"),
-    "palette":      ("Block palette",    "block_palette"),
-    "component_planner": ("Components", "components"),
+    "image_search":      ("Reference images",  "reference_images"),
+    "palette":           ("Block palette",     "block_palette"),
+    "component_planner": ("Components",        "components"),
+    "component_builder": ("Built component",   "component_results"),
+    "combiner":          ("Build JSON",        "build_json"),
+    "converter":         ("Schematic",         "schematic_path"),
 }
 
 # Simple ANSI colours for readability (no extra deps)
@@ -178,7 +191,27 @@ def _print_pipeline_step(node: str, update: dict) -> None:
 
     if isinstance(value, list):
         for i, item in enumerate(value, 1):
-            print(f"  {_DIM}{i:>2}.{_RESET} {item}")
+            if isinstance(item, dict) and "url" in item and "data" in item:
+                print(f"  {_DIM}{i:>2}.{_RESET} {item['url']}")
+            # Component specs from planner
+            elif isinstance(item, dict) and "component_name" in item:
+                dims = item.get("dimensions", {})
+                print(f"  {_DIM}{i:>2}.{_RESET} {item['component_name']} "
+                      f"({dims.get('X','?')}x{dims.get('Y','?')}x{dims.get('Z','?')}) "
+                      f"— {len(item.get('blocks',[]))} block types")
+            # Built component results
+            elif isinstance(item, dict) and "name" in item:
+                s = item.get("size", {})
+                print(f"  {_DIM}{i:>2}.{_RESET} {item['name']} "
+                      f"({s.get('x','?')}x{s.get('y','?')}x{s.get('z','?')})")
+            else:
+                print(f"  {_DIM}{i:>2}.{_RESET} {item}")
+    elif isinstance(value, dict):
+        comps = value.get("components", [])
+        palette = value.get("palette", {})
+        print(f"  {len(comps)} components, {len(palette)} palette entries")
+    elif isinstance(value, str):
+        print(f"  {_GREEN}{value}{_RESET}")
     else:
         print(f"  {value}")
 
@@ -208,6 +241,16 @@ def run_e2e() -> None:
                 "ai_response": "",
                 "schematic_name": None,
                 "schematic_path": None,
+                "rag_score": None,
+                "reference_images": None,
+                "block_palette": None,
+                "palette_map": None,
+                "components": None,
+                "component_results": [],
+                "combined_blocks": None,
+                "build_json": None,
+                "build_layers": None,
+                "total_layers": None,
                 "build_plan": None,
             }
 
@@ -241,6 +284,14 @@ def run_e2e() -> None:
                 print(f"\n{_DIM}── final palette ({len(palette)} blocks) ──────────{_RESET}")
                 for i, block in enumerate(palette, 1):
                     print(f"  {i:>2}. {block}")
+
+            # Show generated schematic path
+            sch_path = final_state.get("schematic_path")
+            if sch_path:
+                print(f"\n{_GREEN}{_BOLD}✓ Schematic saved: {sch_path}{_RESET}")
+                total = final_state.get("total_layers", 0)
+                if total:
+                    print(f"  {total} layers")
 
             print(f"\n{_DIM}──────────────────────────────────────────{_RESET}")
             chat_history = final_state.get("chat_history", chat_history)
