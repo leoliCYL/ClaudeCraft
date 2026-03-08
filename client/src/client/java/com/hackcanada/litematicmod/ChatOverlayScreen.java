@@ -95,7 +95,12 @@ public class ChatOverlayScreen extends Screen {
 
     // ── Layout helpers ───────────────────────────────────────────────────────
     private int left()     { return (this.width  - TOTAL_W) / 2; }
-    private int top()      { return (this.height - TOTAL_H) / 2 + 20; }
+    /** Centre vertically, nudge down slightly, but always keep the bottom inside the screen. */
+    private int top() {
+        int ideal = (this.height - TOTAL_H) / 2 + 10;
+        int maxTop = this.height - TOTAL_H - 4;   // guarantee bottom never clips
+        return Math.min(ideal, maxTop);
+    }
     private int chatLeft() { return left() + SIDEBAR_W; }
 
     private static List<String> currentMessages() {
@@ -148,7 +153,7 @@ public class ChatOverlayScreen extends Screen {
     }
 
     static void newSession() {
-        String name = "Conversation " + nextSessionId++;
+        String name = "Chat " + nextSessionId++;
         allSessions.add(new Session(name));
         activeSession = allSessions.size() - 1;
         while (allSessions.size() > MAX_SESSIONS) allSessions.remove(0);
@@ -211,7 +216,7 @@ public class ChatOverlayScreen extends Screen {
         this.addDrawableChild(sendButton);
         this.addDrawableChild(buildButton);
 
-        // ── "+ New Chat" button — sits below the "Conversations" header + divider
+        // ── "+ New Chat" button — sits below the "Chats" header + divider
         int newBtnY = pt + 18;   // header text 9px + divider at 14 + 4 gap
         this.addDrawableChild(ButtonWidget.builder(Text.literal("+ New Chat"), btn -> {
             renamingSession = -1;
@@ -419,8 +424,8 @@ public class ChatOverlayScreen extends Screen {
         // ── Sidebar background
         ctx.fill(sl, pt, sr, pb, C_SIDEBAR_BG);
 
-        // ── Sidebar header "Conversations"
-        ctx.drawText(this.textRenderer, "Conversations", sl + PAD, pt + 4, C_HDR, false);
+        // ── Sidebar header "Chats"
+        ctx.drawText(this.textRenderer, "Chats", sl + PAD, pt + 4, C_HDR, false);
         ctx.fill(sl, pt + 14, sr, pt + 15, C_DIVIDER);
 
         // ── Row highlights (draw before widgets so they sit behind button text)
