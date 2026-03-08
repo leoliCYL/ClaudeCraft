@@ -22,79 +22,82 @@ import java.util.*;
 
 public class ChatOverlayScreen extends Screen {
 
-    // ── Layout ───────────────────────────────────────────────────────────────────
-    private static final int PANEL_WIDTH   = 340;
-    private static final int PANEL_HEIGHT  = 280;
-    private static final int PAD           = 10;
-    private static final int INPUT_HEIGHT  = 20;
-    private static final int BTN_HEIGHT    = 20;
-    private static final int BTN_WIDTH     = (PANEL_WIDTH - PAD * 2 - 4) / 2;
-    private static final int LINE_HEIGHT   = 12;
-    private static final int MAX_HISTORY   = 200;
-    private static final int TAB_HEIGHT    = 16;
-    private static final int TAB_WIDTH     = 80;
-    private static final int MAX_SESSIONS  = 5;
+    // ── Layout — ChatGPT style: sidebar left + chat right ──────────────────
+    private static final int SIDEBAR_W    = 115;
+    private static final int CHAT_W       = 280;
+    private static final int TOTAL_W      = SIDEBAR_W + CHAT_W;
+    private static final int TOTAL_H      = 260;
+    private static final int PAD          = 8;
+    private static final int INPUT_H      = 20;
+    private static final int BTN_H        = 20;
+    private static final int BTN_W        = (CHAT_W - PAD * 2 - 4) / 2;
+    private static final int LINE_H       = 12;
+    private static final int MAX_HISTORY  = 200;
+    private static final int MAX_SESSIONS = 8;
+    private static final int ROW_H        = 22;
+    private static final int RENAME_BTN_W = 16;
 
     // Colors
-    private static final int COLOR_YOU     = 0xFFFFFFFF;
-    private static final int COLOR_AI      = 0xFFCC77FF;
-    private static final int COLOR_SYS     = 0xFFAAAAAA;
-    private static final int COLOR_BG      = (int) 0xDD101010;
-    private static final int COLOR_DIVIDER = (int) 0x88FFFFFF;
-    private static final int COLOR_TAB_ACT = (int) 0xFF333355;
-    private static final int COLOR_TAB_IN  = (int) 0xFF1A1A2A;
-    private static final int COLOR_TAB_TXT = 0xFFCCCCCC;
-    private static final int COLOR_NEW_BTN = (int) 0xFF224422;
+    private static final int C_WHITE      = 0xFFFFFFFF;
+    private static final int C_AI         = 0xFFCC77FF;
+    private static final int C_SYS        = 0xFFAAAAAA;
+    private static final int C_CHAT_BG    = (int) 0xEE0D0D14;
+    private static final int C_SIDEBAR_BG = (int) 0xEE07070E;
+    private static final int C_DIVIDER    = (int) 0x55FFFFFF;
+    private static final int C_ROW_ACT    = (int) 0xFF1E3A5F;
+    private static final int C_HDR        = 0xFF8888AA;
+    private static final int C_RENAME_BG  = (int) 0xFF0D2040;
 
-    // ── Persistence file ─────────────────────────────────────────────────────────
+    // ── Persistence ─────────────────────────────────────────────────────────
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+
     private static Path historyFile() {
         return MinecraftClient.getInstance().runDirectory.toPath()
                 .resolve("claudecraft_history.json");
     }
 
-    // ── Session model ─────────────────────────────────────────────────────────────
-    /** One conversation session. */
     static class Session {
         String name;
         List<String> messages = new ArrayList<>();
         Session(String name) { this.name = name; }
     }
 
-    // ── Persistent state ─────────────────────────────────────────────────────────
-    static List<Session>    allSessions   = new ArrayList<>();
-    static int              activeSession = 0;   // index into allSessions
+    // ── Persistent state ─────────────────────────────────────────────────────
+    static List<Session> allSessions   = new ArrayList<>();
+    static int           activeSession = 0;
     private static BackendClient persistentClient;
     private static long lastConnectAttemptMs = 0;
     private static final long RECONNECT_COOLDOWN_MS = 5000;
 
-    // ── Per-instance widgets ─────────────────────────────────────────────────────
+    // ── Per-instance widgets ─────────────────────────────────────────────────
     private TextFieldWidget inputField;
 
-    public ChatOverlayScreen() {
-        super(Text.literal("AI Chat"));
-    }
+    /** Index of the session currently being renamed, -1 = none. */
+    private int renamingSession = -1;
+    private TextFieldWidget renameField;
 
-    // ── Layout helpers ───────────────────────────────────────────────────────────
-    private int panelLeft() { return (this.width  - PANEL_WIDTH)  / 2; }
-    private int panelTop()  { return (this.height - PANEL_HEIGHT) / 2; }
+    public ChatOverlayScreen() { super(Text.literal("AI Chat")); }
 
-    // ── Convenience: current session's message list ──────────────────────────────
+    // ── Layout helpers ───────────────────────────────────────────────────────
+    private int left()     { return (this.width  - TOTAL_W) / 2; }
+    private int top()      { return (this.height - TOTAL_H) / 2 + 20; }
+    private int chatLeft() { return left() + SIDEBAR_W; }
+
     private static List<String> currentMessages() {
         if (allSessions.isEmpty()) newSession();
         return allSessions.get(activeSession).messages;
     }
 
-    // ── Disk I/O ─────────────────────────────────────────────────────────────────
+    // ── Disk I/O ─────────────────────────────────────────────────────────────
     static void loadHistory() {
         Path f = historyFile();
         if (!Files.exists(f)) { newSession(); return; }
         try (Reader r = Files.newBufferedReader(f)) {
-            Type listType = new TypeToken<List<Session>>(){}.getType();
-            List<Session> loaded = GSON.fromJson(r, listType);
+            Type t = new TypeToken<List<Session>>(){}.getType();
+            List<Session> loaded = GSON.fromJson(r, t);
             if (loaded != null && !loaded.isEmpty()) {
-                allSessions = loaded;
-                activeSession = allSessions.size() - 1; // open most recent
+                allSessions   = loaded;
+                activeSession = allSessions.size() - 1;
                 return;
             }
         } catch (Exception e) {
@@ -115,18 +118,16 @@ public class ChatOverlayScreen extends Screen {
         }
     }
 
-    // ── Session management ───────────────────────────────────────────────────────
     static void newSession() {
-        String name = "Chat " + new SimpleDateFormat("MM/dd HH:mm").format(new Date());
+        String name = new SimpleDateFormat("MM/dd HH:mm").format(new Date());
         allSessions.add(new Session(name));
         activeSession = allSessions.size() - 1;
-        // Keep at most MAX_SESSIONS (drop oldest)
         while (allSessions.size() > MAX_SESSIONS) allSessions.remove(0);
         if (activeSession >= allSessions.size()) activeSession = allSessions.size() - 1;
         saveHistory();
     }
 
-    // ── Lifecycle ────────────────────────────────────────────────────────────────
+    // ── Lifecycle ────────────────────────────────────────────────────────────
     @Override
     protected void init() {
         super.init();
@@ -139,53 +140,82 @@ public class ChatOverlayScreen extends Screen {
 
         ensureConnected();
 
-        int pl = panelLeft();
-        int pt = panelTop();
-        int btnY   = pt + PANEL_HEIGHT - PAD - BTN_HEIGHT;
-        int inputY = btnY - PAD - INPUT_HEIGHT;
+        int cl  = chatLeft();
+        int sl  = left();
+        int pt  = top();
+        int pb  = pt + TOTAL_H;
+        int btnY   = pb  - PAD - BTN_H;
+        int inputY = btnY - PAD - INPUT_H;
 
+        // ── Chat input field
         inputField = new TextFieldWidget(
-                this.textRenderer, pl + PAD, inputY,
-                PANEL_WIDTH - PAD * 2, INPUT_HEIGHT,
-                Text.literal("Ask AI..."));
+                this.textRenderer, cl + PAD, inputY,
+                CHAT_W - PAD * 2, INPUT_H,
+                Text.literal("Message ClaudeCraft..."));
         inputField.setMaxLength(512);
         inputField.setDrawsBackground(true);
-        inputField.setPlaceholder(Text.literal("Ask AI..."));
+        inputField.setPlaceholder(Text.literal("Message ClaudeCraft..."));
         this.addSelectableChild(inputField);
         this.setInitialFocus(inputField);
 
-        // Send / Build buttons
+        // ── Send / Build buttons
         this.addDrawableChild(ButtonWidget.builder(Text.literal("Send"), btn -> onSend())
-                .dimensions(pl + PAD, btnY, BTN_WIDTH, BTN_HEIGHT).build());
+                .dimensions(cl + PAD, btnY, BTN_W, BTN_H).build());
         this.addDrawableChild(ButtonWidget.builder(Text.literal("Build"), btn -> onBuild())
-                .dimensions(pl + PAD + BTN_WIDTH + 4, btnY, BTN_WIDTH, BTN_HEIGHT).build());
+                .dimensions(cl + PAD + BTN_W + 4, btnY, BTN_W, BTN_H).build());
 
-        // "New Chat" button — top-right of panel
-        this.addDrawableChild(ButtonWidget.builder(Text.literal("+ New"), btn -> {
+        // ── "+ New Chat" button
+        this.addDrawableChild(ButtonWidget.builder(Text.literal("+ New Chat"), btn -> {
+            renamingSession = -1;
             newSession();
             this.clearAndInit();
-        }).dimensions(pl + PANEL_WIDTH - 46, pt + 2, 44, TAB_HEIGHT - 2).build());
+        }).dimensions(sl + PAD, pt + PAD, SIDEBAR_W - PAD * 2, BTN_H).build());
 
-        // Tab buttons — one per session
-        int tabsAreaWidth = PANEL_WIDTH - 50;
-        int tabW = Math.min(TAB_WIDTH, tabsAreaWidth / Math.max(1, allSessions.size()));
-        for (int i = 0; i < allSessions.size(); i++) {
+        // ── Session rows (newest first)
+        int rowStartY = pt + PAD + BTN_H + 6;
+        for (int i = allSessions.size() - 1; i >= 0; i--) {
             final int idx = i;
-            String label = allSessions.get(i).name;
-            // Truncate label to fit tab
-            while (label.length() > 3 && this.textRenderer.getWidth(label) > tabW - 6)
-                label = label.substring(0, label.length() - 1);
-            int tabBgColor = (i == activeSession) ? COLOR_TAB_ACT : COLOR_TAB_IN;
-            // Use a small transparent-ish button per tab
-            ButtonWidget tabBtn = ButtonWidget.builder(Text.literal(label), btn -> {
-                activeSession = idx;
-                ChatOverlayScreen.this.clearAndInit();
-            }).dimensions(pl + i * (tabW + 2), pt + 1, tabW, TAB_HEIGHT - 2).build();
-            this.addDrawableChild(tabBtn);
+            int rowY = rowStartY + (allSessions.size() - 1 - i) * (ROW_H + 2);
+            if (rowY + ROW_H > pb - PAD) break;
+
+            int labelW = SIDEBAR_W - PAD * 2 - RENAME_BTN_W - 2;
+            String label = truncate(allSessions.get(i).name, labelW);
+            this.addDrawableChild(ButtonWidget.builder(Text.literal(label), btn -> {
+                renamingSession = -1;
+                activeSession   = idx;
+                this.clearAndInit();
+            }).dimensions(sl + PAD, rowY, labelW, ROW_H).build());
+
+            // ✎ rename button
+            this.addDrawableChild(ButtonWidget.builder(Text.literal("\u270E"), btn -> {
+                renamingSession = idx;
+                this.clearAndInit();
+            }).dimensions(sl + PAD + labelW + 2, rowY, RENAME_BTN_W, ROW_H).build());
+        }
+
+        // ── Rename inline text field
+        if (renamingSession >= 0 && renamingSession < allSessions.size()) {
+            int rowIdx = allSessions.size() - 1 - renamingSession;
+            int rowY   = rowStartY + rowIdx * (ROW_H + 2);
+
+            renameField = new TextFieldWidget(
+                    this.textRenderer,
+                    sl + PAD, rowY,
+                    SIDEBAR_W - PAD * 2, ROW_H,
+                    Text.literal("Rename..."));
+            renameField.setMaxLength(40);
+            renameField.setDrawsBackground(true);
+            renameField.setText(allSessions.get(renamingSession).name);
+            renameField.setSelectionStart(0);
+            renameField.setSelectionEnd(renameField.getText().length());
+            this.addSelectableChild(renameField);
+            this.setInitialFocus(renameField);
+        } else {
+            renameField = null;
         }
     }
 
-    // ── Connection ───────────────────────────────────────────────────────────────
+    // ── Connection ───────────────────────────────────────────────────────────
     private void ensureConnected() {
         if (persistentClient != null && persistentClient.isOpen()) return;
         if (persistentClient != null &&
@@ -203,16 +233,16 @@ public class ChatOverlayScreen extends Screen {
         }
     }
 
-    // ── Incoming messages ────────────────────────────────────────────────────────
+    // ── Messages ─────────────────────────────────────────────────────────────
     private static void handleIncomingMessage(String message) {
         MinecraftClient.getInstance().execute(() -> {
             if (message.startsWith("LOAD_SCHEMATIC ")) {
-                String filename = message.substring("LOAD_SCHEMATIC ".length()).trim();
-                addMessage("AI: Loading schematic: " + filename);
+                String fn = message.substring("LOAD_SCHEMATIC ".length()).trim();
+                addMessage("AI: Loading schematic: " + fn);
                 MinecraftClient mc = MinecraftClient.getInstance();
                 if (mc.player != null) {
-                    mc.player.sendMessage(Text.literal("[ClaudeCraft] Loading: " + filename), false);
-                    LitematicaHelper.loadLitematica(mc.world, mc.player.getBlockPos(), filename);
+                    mc.player.sendMessage(Text.literal("[ClaudeCraft] Loading: " + fn), false);
+                    LitematicaHelper.loadLitematica(mc.world, mc.player.getBlockPos(), fn);
                 }
             } else {
                 addMessage("AI: " + message);
@@ -220,7 +250,6 @@ public class ChatOverlayScreen extends Screen {
         });
     }
 
-    // ── Button / Enter handlers ──────────────────────────────────────────────────
     private void onSend() {
         String text = inputField != null ? inputField.getText().trim() : "";
         if (text.isEmpty()) return;
@@ -230,11 +259,10 @@ public class ChatOverlayScreen extends Screen {
             persistentClient.send(text);
         } else {
             MinecraftClient.getInstance().execute(() -> {
-                if (persistentClient != null && persistentClient.isOpen()) {
+                if (persistentClient != null && persistentClient.isOpen())
                     persistentClient.send(text);
-                } else {
-                    addMessage("[System] Not connected — start the server first!");
-                }
+                else
+                    addMessage("[System] Not connected \u2014 start the server first!");
             });
         }
         inputField.setText("");
@@ -245,10 +273,10 @@ public class ChatOverlayScreen extends Screen {
         if (text.isEmpty()) return;
         addMessage("[Build] " + text);
         ensureConnected();
-        if (persistentClient != null && persistentClient.isOpen()) {
+        if (persistentClient != null && persistentClient.isOpen())
             persistentClient.send("[BUILD] " + text);
-        } else {
-            addMessage("[System] Not connected — start the server first!");
+        else {
+            addMessage("[System] Not connected \u2014 start the server first!");
             ensureConnected();
         }
         inputField.setText("");
@@ -262,11 +290,37 @@ public class ChatOverlayScreen extends Screen {
         saveHistory();
     }
 
-    // ── Input ────────────────────────────────────────────────────────────────────
+    // ── Rename commit ────────────────────────────────────────────────────────
+    private void commitRename() {
+        if (renameField == null || renamingSession < 0 ||
+                renamingSession >= allSessions.size()) return;
+        String newName = renameField.getText().trim();
+        if (!newName.isEmpty()) {
+            allSessions.get(renamingSession).name = newName;
+            saveHistory();
+        }
+        renamingSession = -1;
+        this.clearAndInit();
+    }
+
+    // ── Input ────────────────────────────────────────────────────────────────
     @Override
     public boolean keyPressed(KeyInput input) {
-        int keyCode = input.key();
-        if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+        int key = input.key();
+
+        // Rename field: Enter confirms, Escape cancels
+        if (renameField != null && getFocused() == renameField) {
+            if (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER) {
+                commitRename(); return true;
+            }
+            if (key == GLFW.GLFW_KEY_ESCAPE) {
+                renamingSession = -1;
+                this.clearAndInit(); return true;
+            }
+            return super.keyPressed(input);
+        }
+
+        if (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER) {
             onSend(); return true;
         }
         return super.keyPressed(input);
@@ -276,88 +330,117 @@ public class ChatOverlayScreen extends Screen {
     @Override public boolean shouldPause()       { return false; }
 
     @Override
-    public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
-        // empty — overlay over game world
+    public void renderBackground(DrawContext ctx, int mx, int my, float delta) {
+        // transparent
     }
 
-    // ── Rendering ────────────────────────────────────────────────────────────────
+    // ── Render ───────────────────────────────────────────────────────────────
     @Override
-    public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        int pl = panelLeft();
-        int pt = panelTop();
-        int pr = pl + PANEL_WIDTH;
-        int pb = pt + PANEL_HEIGHT;
+    public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
+        int sl  = left();
+        int cl  = chatLeft();
+        int pt  = top();
+        int pb  = pt + TOTAL_H;
+        int sr  = cl;
+        int cr  = cl + CHAT_W;
 
-        // ── Panel background
-        context.fill(pl, pt, pr, pb, COLOR_BG);
+        // Sidebar background
+        ctx.fill(sl, pt, sr, pb, C_SIDEBAR_BG);
 
-        // Highlight active tab background (tab buttons are drawn by super.render below)
-        int tabsAreaWidth = PANEL_WIDTH - 50;
-        int tabW = Math.min(TAB_WIDTH, tabsAreaWidth / Math.max(1, allSessions.size()));
-        int activeTx = pl + activeSession * (tabW + 2);
-        context.fill(activeTx, pt + 1, activeTx + tabW, pt + TAB_HEIGHT - 1, COLOR_TAB_ACT);
+        // Sidebar header
+        ctx.drawText(this.textRenderer, "Conversations", sl + PAD, pt + 4, C_HDR, false);
+        ctx.fill(sl, pt + 14, sr, pt + 15, C_DIVIDER);
 
-        // Divider under tabs
-        context.fill(pl, pt + TAB_HEIGHT + 2, pr, pt + TAB_HEIGHT + 3, COLOR_DIVIDER);
-
-        // ── Bottom widgets Y positions
-        int btnY   = pb - PAD - BTN_HEIGHT;
-        int inputY = btnY - PAD - INPUT_HEIGHT;
-
-        // ── Divider above input area
-        context.fill(pl + PAD, inputY - 4, pr - PAD, inputY - 3, COLOR_DIVIDER);
-
-        // ── Chat history ─────────────────────────────────────────────────────────
-        int textAreaTop    = pt + TAB_HEIGHT + 6;
-        int textAreaBottom = inputY - 8;
-        int maxTextWidth   = PANEL_WIDTH - PAD * 2;
-
-        List<String[]> wrappedLines = new ArrayList<>();
-        for (String msg : currentMessages()) {
-            String prefix = msg.startsWith("AI: ") ? "AI" :
-                            msg.startsWith("You: ") ? "You" : "Sys";
-            List<String> wrapped = wrapText(msg, maxTextWidth);
-            for (int i = 0; i < wrapped.size(); i++) {
-                wrappedLines.add(new String[]{ i == 0 ? prefix : "", wrapped.get(i) });
-            }
+        // Active session highlight
+        int rowStartY = pt + PAD + BTN_H + 6;
+        if (!allSessions.isEmpty() && renamingSession != activeSession) {
+            int rowIdx = allSessions.size() - 1 - activeSession;
+            int rowY   = rowStartY + rowIdx * (ROW_H + 2);
+            if (rowY + ROW_H <= pb - PAD)
+                ctx.fill(sl + PAD - 2, rowY - 1, sr - PAD + 2, rowY + ROW_H + 1, C_ROW_ACT);
         }
 
-        int maxLines = (textAreaBottom - textAreaTop) / LINE_HEIGHT;
-        int startIdx = Math.max(0, wrappedLines.size() - maxLines);
-        int y = textAreaTop;
-        for (int i = startIdx; i < wrappedLines.size(); i++) {
-            String[] entry = wrappedLines.get(i);
-            int color = "AI".equals(entry[0])  ? COLOR_AI  :
-                        "You".equals(entry[0]) ? COLOR_YOU : COLOR_SYS;
-            context.drawText(this.textRenderer, entry[1], pl + PAD, y, color, true);
-            y += LINE_HEIGHT;
+        // Rename row highlight
+        if (renamingSession >= 0 && renamingSession < allSessions.size()) {
+            int rowIdx = allSessions.size() - 1 - renamingSession;
+            int rowY   = rowStartY + rowIdx * (ROW_H + 2);
+            ctx.fill(sl + PAD - 2, rowY - 1, sr - PAD + 2, rowY + ROW_H + 1, C_RENAME_BG);
         }
 
-        // ── Widgets (buttons + input)
-        super.render(context, mouseX, mouseY, delta);
-        inputField.render(context, mouseX, mouseY, delta);
+        // Vertical divider
+        ctx.fill(sr, pt, sr + 1, pb, C_DIVIDER);
 
-        // ── Connection dot
+        // Chat panel background
+        ctx.fill(cl, pt, cr, pb, C_CHAT_BG);
+
+        // Chat header bar
+        ctx.fill(cl, pt, cr, pt + 18, (int) 0xEE111118);
+        String hdrName = allSessions.isEmpty() ? "New Chat" : allSessions.get(activeSession).name;
+        ctx.drawText(this.textRenderer, hdrName, cl + PAD, pt + 5, C_WHITE, false);
+
+        // Connection dot
         boolean connected = persistentClient != null && persistentClient.isOpen();
-        context.drawText(this.textRenderer, "●", pr - 12, pt + TAB_HEIGHT + 5,
+        ctx.drawText(this.textRenderer, "\u25CF", cr - 14, pt + 5,
                 connected ? 0xFF55FF55 : 0xFFFF5555, true);
+
+        // Input area divider
+        int btnY   = pb - PAD - BTN_H;
+        int inputY = btnY - PAD - INPUT_H;
+        ctx.fill(cl + PAD, inputY - 4, cr - PAD, inputY - 3, C_DIVIDER);
+
+        // Chat history
+        int textTop    = pt + 22;
+        int textBottom = inputY - 6;
+        int maxTextW   = CHAT_W - PAD * 2;
+
+        List<String[]> lines = new ArrayList<>();
+        for (String msg : currentMessages()) {
+            String prefix = msg.startsWith("AI: ")  ? "AI"  :
+                            msg.startsWith("You: ") ? "You" : "Sys";
+            List<String> wrapped = wrapText(msg, maxTextW);
+            for (int i = 0; i < wrapped.size(); i++)
+                lines.add(new String[]{ i == 0 ? prefix : "", wrapped.get(i) });
+        }
+
+        int maxLines = (textBottom - textTop) / LINE_H;
+        int start    = Math.max(0, lines.size() - maxLines);
+        int y = textTop;
+        for (int i = start; i < lines.size(); i++) {
+            String[] e = lines.get(i);
+            int color = "AI".equals(e[0])  ? C_AI    :
+                        "You".equals(e[0]) ? C_WHITE  : C_SYS;
+            ctx.drawText(this.textRenderer, e[1], cl + PAD, y, color, true);
+            y += LINE_H;
+        }
+
+        // Widgets
+        super.render(ctx, mouseX, mouseY, delta);
+        inputField.render(ctx, mouseX, mouseY, delta);
+        if (renameField != null) renameField.render(ctx, mouseX, mouseY, delta);
     }
 
-    // ── Word wrap ────────────────────────────────────────────────────────────────
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    private String truncate(String text, int maxWidth) {
+        String t = text;
+        while (t.length() > 1 && this.textRenderer.getWidth(t + "...") > maxWidth)
+            t = t.substring(0, t.length() - 1);
+        return t.length() < text.length() ? t + "..." : t;
+    }
+
     private List<String> wrapText(String text, int maxWidth) {
         List<String> lines = new ArrayList<>();
         String[] words = text.split(" ", -1);
-        StringBuilder current = new StringBuilder();
+        StringBuilder cur = new StringBuilder();
         for (String word : words) {
-            String candidate = current.length() > 0 ? current + " " + word : word;
-            if (this.textRenderer.getWidth(candidate) > maxWidth && current.length() > 0) {
-                lines.add(current.toString());
-                current = new StringBuilder(word);
+            String candidate = cur.length() > 0 ? cur + " " + word : word;
+            if (this.textRenderer.getWidth(candidate) > maxWidth && cur.length() > 0) {
+                lines.add(cur.toString());
+                cur = new StringBuilder(word);
             } else {
-                current = new StringBuilder(candidate);
+                cur = new StringBuilder(candidate);
             }
         }
-        if (current.length() > 0) lines.add(current.toString());
+        if (cur.length() > 0) lines.add(cur.toString());
         if (lines.isEmpty()) lines.add("");
         return lines;
     }
