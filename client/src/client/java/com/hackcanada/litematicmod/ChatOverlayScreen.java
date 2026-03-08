@@ -63,7 +63,7 @@ public class ChatOverlayScreen extends Screen {
     private static final int C_TAB_INACTIVE = (int) 0xFF0D1020;
 
     // ── Tab state ────────────────────────────────────────────────────────────
-    /** 0 = Chat tab, 1 = Schematic tab */
+    /** 0 = Chat tab, 1 = Schematic (load by name) tab, 2 = My Files tab */
     private static int activeTab = 0;
 
     // ── Schematic panel state ────────────────────────────────────────────────
@@ -231,8 +231,8 @@ public class ChatOverlayScreen extends Screen {
         int btnY   = pb  - BOT_PAD - BTN_H;
         int inputY = btnY - PAD - INPUT_H;
 
-        // ── Tab buttons (Chat | Schematic) ───────────────────────────────────
-        int tabW = (CHAT_W - PAD * 2) / 2;
+        // ── Tab buttons (Chat | Schematic | My Files) ────────────────────────
+        int tabW = (CHAT_W - PAD * 2) / 3;
         int tabY = pt + 1;
         this.addDrawableChild(ButtonWidget.builder(Text.literal("Chat"), btn -> {
             activeTab = 0;
@@ -242,6 +242,10 @@ public class ChatOverlayScreen extends Screen {
             activeTab = 1;
             this.clearAndInit();
         }).dimensions(cl + PAD + tabW, tabY, tabW - 2, 16).build());
+        this.addDrawableChild(ButtonWidget.builder(Text.literal("My Files"), btn -> {
+            activeTab = 2;
+            this.clearAndInit();
+        }).dimensions(cl + PAD + tabW * 2, tabY, tabW - 2, 16).build());
 
         if (activeTab == 0) {
             // ── CHAT TAB ─────────────────────────────────────────────────────
@@ -267,7 +271,7 @@ public class ChatOverlayScreen extends Screen {
             this.addDrawableChild(sendButton);
             this.addDrawableChild(buildButton);
 
-        } else {
+        } else if (activeTab == 1) {
             // ── SCHEMATIC TAB ─────────────────────────────────────────────────
             inputField = null; sendButton = null; buildButton = null;
 
@@ -293,6 +297,37 @@ public class ChatOverlayScreen extends Screen {
             int buildAiBtnY = loadBtnY + BTN_H + 4;
             this.addDrawableChild(ButtonWidget.builder(Text.literal("Build via AI"), btn -> onBuildSchematic())
                     .dimensions(cl + PAD, buildAiBtnY, CHAT_W - PAD * 2, BTN_H).build());
+
+        } else if (activeTab == 2) {
+            // ── MY FILES TAB ──────────────────────────────────────────────────
+            inputField = null; sendButton = null; buildButton = null;
+
+            // Scan both litematics/ and schematics/ folders for .litematic files
+            List<Path> files = scanLitematicFolders();
+
+            int fileRowY = pt + 24;  // start just below the tab bar
+            int fileRowH = 18;
+            int fileW    = CHAT_W - PAD * 2;
+
+            if (files.isEmpty()) {
+                // Nothing to show — instruction text drawn in render()
+            } else {
+                for (Path f : files) {
+                    if (fileRowY + fileRowH > pb - PAD) break;  // clamp to panel
+                    String stem = f.getFileName().toString()
+                            .replaceAll("\\.litematic$", "");
+                    String folder = f.getParent().getFileName().toString(); // "litematics" or "schematics"
+                    String label  = truncate("[" + folder.charAt(0) + "] " + stem, fileW - 4);
+                    final Path filePath = f;
+                    final String stemFinal = stem;
+                    final Path parentFinal = f.getParent();
+                    final int rowY = fileRowY;
+                    this.addDrawableChild(ButtonWidget.builder(Text.literal(label), btn -> {
+                        onLoadFileSchematic(stemFinal, parentFinal);
+                    }).dimensions(cl + PAD, rowY, fileW, fileRowH).build());
+                    fileRowY += fileRowH + 2;
+                }
+            }
         }
 
         // ── "+ New Chat" button — sits below the "Chats" header + divider
@@ -656,6 +691,63 @@ public class ChatOverlayScreen extends Screen {
         activeTab = 0; this.clearAndInit();
     }
 
+    // ── My Files helpers ─────────────────────────────────────────────────────
+
+    /**
+     * Returns all .litematic files found in the two standard Minecraft folders:
+     *   .minecraft/litematics/   (files written by ClaudeCraft's streaming build)
+     *   .minecraft/schematics/   (files placed manually / downloaded)
+     * Files are sorted alphabetically within each folder; litematics/ comes first.
+     */
+    private List<Path> scanLitematicFolders() {
+        java.io.File runDir = MinecraftClient.getInstance().runDirectory;
+        List<Path> results = new ArrayList<>();
+        for (String folderName : new String[]{"litematics", "schematics"}) {
+            java.io.File dir = new java.io.File(runDir, folderName);
+            if (!dir.exists()) continue;
+            java.io.File[] files = dir.listFiles(
+                    f -> f.isFile() && f.getName().endsWith(".litematic"));
+            if (files == null) continue;
+            Arrays.sort(files, Comparator.comparing(java.io.File::getName));
+            for (java.io.File f : files) results.add(f.toPath());
+        }
+        return results;
+    }
+
+    /**
+     * Load a schematic from an explicit folder path (not from the type-in field).
+     * Copies the file into litematics/ if it isn't already there, then calls
+     * {@link SchematicHelper#loadLitematica} so Litematica registers it.
+     */
+    private void onLoadFileSchematic(String stem, Path parentFolder) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        java.io.File runDir = mc.runDirectory;
+
+        // Make sure it ends up in litematics/ (SchematicHelper always looks there)
+        java.io.File liteDir  = new java.io.File(runDir, "litematics");
+        java.io.File srcFile  = new java.io.File(parentFolder.toFile(), stem + ".litematic");
+        java.io.File destFile = new java.io.File(liteDir, stem + ".litematic");
+
+        try {
+            if (!destFile.exists()) {
+                liteDir.mkdirs();
+                Files.copy(srcFile.toPath(), destFile.toPath());
+            }
+        } catch (Exception e) {
+            ClaudeCraft.LOGGER.warn("Could not copy schematic to litematics/: " + e.getMessage());
+        }
+
+        addMessage("[Schematic] Loading: " + stem);
+        if (mc.player != null) {
+            mc.player.sendMessage(
+                Text.literal("§a[ClaudeCraft] Loading: " + stem), false);
+            SchematicHelper.loadLitematica(mc.world, mc.player.getBlockPos(), stem);
+        } else {
+            addMessage("[System] Join a world first!");
+        }
+        activeTab = 0; this.clearAndInit();
+    }
+
     public static void addMessage(String msg) {
         if (allSessions.isEmpty()) newSession();
         List<String> msgs = currentMessages();
@@ -758,13 +850,11 @@ public class ChatOverlayScreen extends Screen {
         ctx.fill(cl, pt, cr, pb, C_CHAT_BG);
 
         // ── Tab bar background + active highlight
-        int tabW = (CHAT_W - PAD * 2) / 2;
+        int tabW = (CHAT_W - PAD * 2) / 3;
         ctx.fill(cl, pt, cr, pt + 18, (int) 0xEE111118);
-        // Active tab underline
-        if (activeTab == 0)
-            ctx.fill(cl + PAD, pt + 15, cl + PAD + tabW - 2, pt + 17, C_AI);
-        else
-            ctx.fill(cl + PAD + tabW, pt + 15, cl + PAD + tabW * 2 - 2, pt + 17, C_AI);
+        // Active tab underline (purple bar under the active tab)
+        int ulX = cl + PAD + activeTab * tabW;
+        ctx.fill(ulX, pt + 15, ulX + tabW - 2, pt + 17, C_AI);
 
         // ── Connection dot (top-right)
         boolean connected = persistentClient != null && persistentClient.isOpen();
@@ -804,7 +894,7 @@ public class ChatOverlayScreen extends Screen {
                 y += LINE_H;
             }
 
-        } else {
+        } else if (activeTab == 1) {
             // ── SCHEMATIC PANEL ──────────────────────────────────────────────
             int tx = cl + PAD;
             int ty = pt + 22;
@@ -812,7 +902,24 @@ public class ChatOverlayScreen extends Screen {
             ctx.drawText(this.textRenderer, "Paste the schematic name below.", tx, ty + 12, C_SYS, false);
             ctx.drawText(this.textRenderer, "(without .litematic extension)", tx, ty + 22, C_SYS, false);
             ctx.drawText(this.textRenderer, "Load  \u2192 places at your feet via Litematica", tx, ty + 36 + INPUT_H + 6 + BTN_H + 8, C_SYS, false);
-            ctx.drawText(this.textRenderer, "Build \u2192 streams layers from AI server", tx, ty + 36 + INPUT_H + 6 + BTN_H + 20, C_SYS, false);
+            ctx.drawText(this.textRenderer, "Build \u2192 streams layers from AI server",       tx, ty + 36 + INPUT_H + 6 + BTN_H + 20, C_SYS, false);
+
+        } else {
+            // ── MY FILES PANEL ───────────────────────────────────────────────
+            int tx = cl + PAD;
+            int ty = pt + 22;
+            ctx.drawText(this.textRenderer, "Your .litematic files", tx, ty - 2, C_AI, false);
+            ctx.fill(cl + PAD, ty + 8, cr - PAD, ty + 9, C_DIVIDER);
+
+            // Show folder labels as faint headers between groups
+            List<Path> files = scanLitematicFolders();
+            if (files.isEmpty()) {
+                ctx.drawText(this.textRenderer, "No .litematic files found.", tx, ty + 14, C_SYS, false);
+                ctx.drawText(this.textRenderer, "Place files in:", tx, ty + 26, C_SYS, false);
+                ctx.drawText(this.textRenderer, "  .minecraft/litematics/", tx, ty + 38, 0xFF6688AA, false);
+                ctx.drawText(this.textRenderer, "  .minecraft/schematics/", tx, ty + 50, 0xFF6688AA, false);
+            }
+            // (buttons for each file are added in init())
         }
 
         // ── Widgets (buttons, input field, rename field, schematic field)
