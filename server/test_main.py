@@ -38,6 +38,7 @@ from google import genai
 load_dotenv()
 
 from lib.schematic_parser import parse_litematic
+from graph import build_graph, AgentState
 
 # ---------------------------------------------------------------------------
 # Gemini client
@@ -137,71 +138,117 @@ def find_schematic(user_message: str, registry: dict) -> tuple[str | None, str |
 app = FastAPI(title="ClaudeCraft Litematica Test Server")
 schematic_registry = load_schematic_registry()
 
+# Real LangGraph pipeline (same one used by main.py)
+agent = build_graph()
+
 
 @app.websocket("/")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     logger.info("Minecraft client connected.")
 
+    chat_history: list[dict] = []
+
     try:
         while True:
             data = await websocket.receive_text()
             logger.info(f">>> CLIENT: {data}")
 
-            # ── 1. Get real AI response from Gemini ────────────────────────
-            ai_reply = await asyncio.get_event_loop().run_in_executor(
-                None, ask_gemini, data
-            )
-            await websocket.send_text(ai_reply)
-            logger.info(f"<<< GEMINI: {ai_reply}")
+            is_build = data.strip().startswith("[BUILD]")
 
-            # ── 2. Check if this is a build request ────────────────────────
-            schematic_name, schematic_path = find_schematic(data, schematic_registry)
+            if is_build:
+                # ── BUILD path: run the real LangGraph pipeline ────────────
+                # Strip the "[BUILD]" prefix so the router sees a plain request
+                build_msg = data.strip()[len("[BUILD]"):].strip()
 
-            if not schematic_name or not schematic_path:
-                logger.info("No schematic match — chat only response sent.")
-                continue
+                state: AgentState = {
+                    "user_message": build_msg,
+                    "chat_history": chat_history,
+                    "intent": "build",   # force build intent
+                    "ai_response": "",
+                    "schematic_name": None,
+                    "schematic_path": None,
+                    "rag_score": None,
+                    "reference_images": None,
+                    "block_palette": None,
+                    "palette_map": None,
+                    "components": None,
+                    "component_results": [],
+                    "combined_blocks": None,
+                    "build_json": None,
+                    "build_layers": None,
+                    "total_layers": None,
+                    "build_plan": None,
+                }
 
-            logger.info(f"Matched schematic: {schematic_name} → {schematic_path}")
+                try:
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: agent.invoke(state)
+                    )
+                    chat_history = result.get("chat_history", chat_history)
 
-            # ── 3. Parse the .litematic file ───────────────────────────────
-            try:
-                parsed = parse_litematic(schematic_path)
-            except Exception as e:
-                logger.error(f"Failed to parse schematic: {e}", exc_info=True)
-                await websocket.send_text(f"Error parsing schematic '{schematic_name}': {e}")
-                continue
+                    # 1. Send AI text reply
+                    ai_response = result.get("ai_response", "")
+                    if ai_response:
+                        await websocket.send_text(ai_response)
+                        logger.info(f"<<< AI: {ai_response[:80]}")
 
-            total_layers = parsed["total_layers"]
+                    # 2. Check if the pipeline generated new layers
+                    build_layers = result.get("build_layers")
+                    total_layers = result.get("total_layers", 0)
+                    schematic_name = result.get("schematic_name") or build_msg
 
-            # ── 4. Stream BUILD_START ──────────────────────────────────────
-            start_msg = json.dumps({
-                "type": "BUILD_START",
-                "name": parsed["name"],
-                "totalLayers": total_layers,
-            })
-            await websocket.send_text(start_msg)
-            logger.info(f"<<< BUILD_START: {parsed['name']} ({total_layers} layers)")
+                    # 3. Fallback: if generation produced a schematic_path but no
+                    #    build_layers (RAG hit path), parse the .litematic file
+                    if not build_layers and result.get("schematic_path"):
+                        try:
+                            parsed = parse_litematic(result["schematic_path"])
+                            build_layers = parsed["layers"]
+                            total_layers = parsed["total_layers"]
+                            schematic_name = parsed["name"]
+                        except Exception as pe:
+                            logger.error(f"Fallback parse failed: {pe}")
 
-            # ── 5. Stream each layer ───────────────────────────────────────
-            for i, layer_data in parsed["layers"].items():
-                layer_msg = json.dumps({
-                    "type": "BUILD_LAYER",
-                    "layerIndex": int(i),
-                    "yLevel": layer_data["y_level"],
-                    "blocks": layer_data["blocks"],
-                })
-                await websocket.send_text(layer_msg)
-                logger.info(
-                    f"<<< BUILD_LAYER {i}/{total_layers}: "
-                    f"Y={layer_data['y_level']}, {len(layer_data['blocks'])} blocks"
+                    if build_layers and total_layers:
+                        # BUILD_START
+                        await websocket.send_text(json.dumps({
+                            "type": "BUILD_START",
+                            "name": schematic_name,
+                            "totalLayers": total_layers,
+                        }))
+                        logger.info(f"<<< BUILD_START: {schematic_name} ({total_layers} layers)")
+
+                        # BUILD_LAYER × N
+                        for i, layer_data in build_layers.items():
+                            await websocket.send_text(json.dumps({
+                                "type": "BUILD_LAYER",
+                                "layerIndex": int(i),
+                                "yLevel": layer_data["y_level"],
+                                "blocks": layer_data["blocks"],
+                            }))
+                            logger.info(
+                                f"<<< BUILD_LAYER {i}/{total_layers}: "
+                                f"Y={layer_data['y_level']}, {len(layer_data['blocks'])} blocks"
+                            )
+                            await asyncio.sleep(LAYER_DELAY)
+
+                        # BUILD_DONE
+                        await websocket.send_text(json.dumps({"type": "BUILD_DONE"}))
+                        logger.info("<<< BUILD_DONE")
+                    else:
+                        logger.warning("Pipeline returned no build_layers — no schematic streamed.")
+
+                except Exception as e:
+                    logger.error(f"LangGraph pipeline error: {e}", exc_info=True)
+                    await websocket.send_text(f"Sorry, the build pipeline failed: {e}")
+
+            else:
+                # ── CHAT path: Gemini for fast conversational replies ──────
+                ai_reply = await asyncio.get_event_loop().run_in_executor(
+                    None, ask_gemini, data
                 )
-                await asyncio.sleep(LAYER_DELAY)
-
-            # ── 6. Stream BUILD_DONE ───────────────────────────────────────
-            done_msg = json.dumps({"type": "BUILD_DONE"})
-            await websocket.send_text(done_msg)
-            logger.info("<<< BUILD_DONE")
+                await websocket.send_text(ai_reply)
+                logger.info(f"<<< GEMINI: {ai_reply}")
 
     except WebSocketDisconnect:
         logger.info("Minecraft client disconnected.")
