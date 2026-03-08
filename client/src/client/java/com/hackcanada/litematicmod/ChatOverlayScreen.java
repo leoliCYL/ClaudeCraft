@@ -95,11 +95,11 @@ public class ChatOverlayScreen extends Screen {
 
     // ── Layout helpers ───────────────────────────────────────────────────────
     private int left()     { return (this.width  - TOTAL_W) / 2; }
-    /** Centre vertically, nudge down slightly, but always keep the bottom inside the screen. */
+    /** Always keep the panel fully inside the screen — clamped on both top and bottom. */
     private int top() {
-        int ideal = (this.height - TOTAL_H) / 2 + 10;
-        int maxTop = this.height - TOTAL_H - 4;   // guarantee bottom never clips
-        return Math.min(ideal, maxTop);
+        int centered = (this.height - TOTAL_H) / 2;
+        // At least 4px from top, at least 4px from bottom
+        return Math.max(4, Math.min(centered, this.height - TOTAL_H - 4));
     }
     private int chatLeft() { return left() + SIDEBAR_W; }
 
@@ -163,13 +163,23 @@ public class ChatOverlayScreen extends Screen {
 
     static void deleteSession(int idx) {
         if (allSessions.size() <= 1) {
-            // keep at least one — just clear it
+            // keep at least one — just clear it and reset its number
             allSessions.get(0).messages.clear();
+            allSessions.get(0).name = "Chat 1";
+            nextSessionId = 2;
             activeSession = 0;
             saveHistory();
             return;
         }
         allSessions.remove(idx);
+        // Renumber all remaining "Chat N" sessions sequentially from 1
+        nextSessionId = 1;
+        for (Session s : allSessions) {
+            if (s.name.matches("Chat \\d+")) {
+                s.name = "Chat " + nextSessionId;
+            }
+            nextSessionId++;
+        }
         if (activeSession >= allSessions.size()) activeSession = allSessions.size() - 1;
         if (activeSession < 0) activeSession = 0;
         saveHistory();
