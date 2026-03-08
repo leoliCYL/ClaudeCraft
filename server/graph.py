@@ -11,6 +11,7 @@ import logging
 from typing import Optional, TypedDict
 
 from langgraph.graph import StateGraph, END, START
+from langgraph.constants import Send
 
 from nodes.router import route_intent
 from nodes.chat import chat_respond
@@ -77,6 +78,18 @@ def _build_decision(state: AgentState) -> str:
     return "generate"
 
 
+def _fan_out_components(state: AgentState) -> list[Send]:
+    """Spawn one component_builder per component in parallel via Send()."""
+    components = state.get("components", [])
+    if not components:
+        # No components planned — send a single empty run so the graph continues
+        return [Send("component_builder", {**state, "current_component": None})]
+    return [
+        Send("component_builder", {**state, "current_component": comp})
+        for comp in components
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Graph assembly
 # ---------------------------------------------------------------------------
@@ -116,10 +129,14 @@ def build_graph():
         "generate": "image_search",
     })
 
-    # Generation pipeline: sequential chain
+    # Generation pipeline
     graph.add_edge("image_search", "palette")
     graph.add_edge("palette", "component_planner")
-    graph.add_edge("component_planner", "component_builder")
+
+    # Fan-out: component_planner -> N parallel component_builders via Send()
+    graph.add_conditional_edges("component_planner", _fan_out_components)
+
+    # Fan-in: all component_builder results merge into combiner
     graph.add_edge("component_builder", "combiner")
     graph.add_edge("combiner", "converter")
     graph.add_edge("converter", END)

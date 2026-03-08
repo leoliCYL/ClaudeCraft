@@ -18,6 +18,8 @@ import logging
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
+from urllib.parse import urlparse
+from openai import OpenAI
 
 import asyncio
 import json
