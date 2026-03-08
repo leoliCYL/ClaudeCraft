@@ -2,32 +2,21 @@
 Chat node — conversational Minecraft assistant.
 """
 
-import os
 import logging
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from lib.llm_factory import get_llm
+from prompts.system_prompts import CHAT_SYSTEM
 
 logger = logging.getLogger(__name__)
-
-_CHAT_SYSTEM = """\
-You are a friendly and knowledgeable Minecraft assistant called Claude Craft.
-You chat with the player about anything Minecraft-related: tips, strategies,
-lore, building advice, redstone, mobs, enchantments, etc.
-Keep responses concise (2-3 sentences) since they appear in a small in-game overlay.
-Be enthusiastic and helpful!"""
 
 
 def chat_respond(state: dict) -> dict:
     """Generate a conversational response."""
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        google_api_key=os.getenv("GEMINI_API_KEY"),
-        temperature=0.7,
-    )
+    llm = get_llm(temperature=0.7)
 
     # Build message list from history + current message
-    messages = [SystemMessage(content=_CHAT_SYSTEM)]
+    messages = [SystemMessage(content=CHAT_SYSTEM)]
 
     for msg in state.get("chat_history", []):
         if msg["role"] == "user":
@@ -40,7 +29,7 @@ def chat_respond(state: dict) -> dict:
     result = llm.invoke(messages)
     reply = result.content.strip()
 
-    logger.info(f"Chat response: {reply[:80]}...")
+    logger.info(f"\033[35mChat response: {reply[:80]}...\033[0m")
 
     # Update history
     updated_history = list(state.get("chat_history", []))

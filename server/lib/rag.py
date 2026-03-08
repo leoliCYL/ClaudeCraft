@@ -15,15 +15,18 @@ from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
 
+# Base server directory (lib/ -> server/)
+_SERVER_DIR = Path(__file__).parent.parent
+
 # Directories to scan for .litematic files (in priority order)
 _SCHEMATIC_DIRS = [
-    Path(__file__).parent / ".." / "client" / "run" / "schematics",
-    Path(__file__).parent / ".." / "client" / "run" / "litematics",
-    Path(__file__).parent / "assets",
+    _SERVER_DIR / ".." / "client" / "run" / "schematics",
+    _SERVER_DIR / ".." / "client" / "run" / "litematics",
+    _SERVER_DIR / "assets",
 ]
 
 # JSON metadata file
-_METADATA_PATH = Path(__file__).parent / "schematics.json"
+_METADATA_PATH = _SERVER_DIR / "schematics.json"
 
 
 def _load_metadata() -> dict:
@@ -85,10 +88,9 @@ def _build_index() -> Optional[FAISS]:
     if not docs:
         return None
 
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/gemini-embedding-001",
-        google_api_key=os.getenv("GEMINI_API_KEY"),
-    )
+    from lib.llm_factory import get_embeddings
+
+    embeddings = get_embeddings()
     return FAISS.from_documents(docs, embeddings)
 
 
@@ -114,16 +116,19 @@ def retrieve_schematic(query: str, k: int = 1) -> Optional[dict]:
     Find the best-matching schematic for a natural-language query.
 
     Returns:
-        dict with keys 'name' and 'path', or None if no schematics exist.
+        dict with keys 'name', 'path', and 'score' (0-1, higher = better),
+        or None if no schematics exist.
     """
     index = get_index()
     if index is None:
         return None
 
-    results = index.similarity_search(query, k=k)
+    results = index.similarity_search_with_score(query, k=k)
     if not results:
         return None
 
-    best = results[0]
-    logger.info(f"RAG match for '{query}': {best.metadata['name']}")
-    return {"name": best.metadata["name"], "path": best.metadata["path"]}
+    best_doc, distance = results[0]
+    # FAISS returns L2 distance — convert to a 0-1 similarity score
+    score = 1.0 / (1.0 + distance)
+    logger.info(f"\033[32mRAG match for '{query}': {best_doc.metadata['name']} (score={score:.3f})\033[0m")
+    return {"name": best_doc.metadata["name"], "path": best_doc.metadata["path"], "score": score}

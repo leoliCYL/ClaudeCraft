@@ -24,6 +24,7 @@ from nodes.combiner import combine_components
 from nodes.converter import convert_to_layers
 
 logger = logging.getLogger(__name__)
+THRESHOLD = 0.9
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +41,7 @@ class AgentState(TypedDict):
     # RAG path (existing schematics)
     schematic_name: Optional[str]
     schematic_path: Optional[str]
+    rag_score: Optional[float]
 
     # Generation pipeline
     reference_images: Optional[list]           # URLs/paths from image search
@@ -47,6 +49,7 @@ class AgentState(TypedDict):
     components: Optional[list]                 # component specs from planner
     component_results: Optional[list]          # built component block data
     combined_blocks: Optional[list]            # merged block list
+    build_json: Optional[dict]                 # full JSON {palette, components, placements}
     build_layers: Optional[dict]               # Y-grouped layers for streaming
     total_layers: Optional[int]                # number of Y layers
 
@@ -66,11 +69,14 @@ def _route_decision(state: AgentState) -> str:
 def _build_decision(state: AgentState) -> str:
     """
     After the build node (RAG check):
-    - If a schematic was found via RAG -> 'rag_hit' (stream existing file)
-    - If no match -> 'generate' (run the generation pipeline)
+    - If a schematic was found via RAG with high confidence -> 'rag_hit'
+    - Otherwise -> 'generate' (run the generation pipeline)
     """
-    if state.get("schematic_path"):
+    score = state.get("rag_score", 0.0)
+    if state.get("schematic_path") and score >= THRESHOLD:
+        logger.info(f"\033[32mRAG score {score:.3f} >= {THRESHOLD} — using existing schematic\033[0m")
         return "rag_hit"
+    logger.info(f"\033[32mRAG score {score:.3f} < {THRESHOLD} — entering generation pipeline\033[0m")
     return "generate"
 
 
@@ -102,10 +108,10 @@ def build_graph():
     # Generation pipeline nodes
     graph.add_node("image_search", search_images)
     graph.add_node("palette", extract_palette)
-    graph.add_node("component_planner", plan_components)
-    graph.add_node("component_builder", build_component)
-    graph.add_node("combiner", combine_components)
-    graph.add_node("converter", convert_to_layers)
+    graph.add_node("component_planner", plan_components)    # mark's thing
+    graph.add_node("component_builder", build_component)    # create components individually
+    graph.add_node("combiner", combine_components)          # combine components to make final build
+    graph.add_node("converter", convert_to_layers)          # convert json into litematica files
 
     # ── Edges ──
 

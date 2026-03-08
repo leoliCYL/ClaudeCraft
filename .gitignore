@@ -21,3 +21,5 @@ run/
 # OS
 .DS_Store
 Thumbs.db
+
+.palette_temp/

@@ -3,9 +3,17 @@ Claude Craft — FastAPI WebSocket server powered by LangGraph.
 
 Handles text/binary WebSocket communication with the Minecraft client.
 All AI logic is delegated to the LangGraph agent pipeline.
+
+Run modes
+---------
+  python main.py              — start the WebSocket server (default)
+  python main.py -e           — end-to-end CLI mode: no server, interact in the
+                                terminal and see the full request pipeline printed
+                                step by step (images → palette → …)
 """
 
 import os
+import sys
 import logging
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -17,7 +25,7 @@ import asyncio
 import json
 
 from graph import build_graph, AgentState
-from schematic_parser import parse_litematic
+from lib.schematic_parser import parse_litematic
 
 load_dotenv()
 
@@ -137,10 +145,121 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 # ---------------------------------------------------------------------------
+# End-to-end CLI mode  (-e flag)
+# ---------------------------------------------------------------------------
+
+# Node names that carry interesting pipeline state worth printing
+_E2E_DISPLAY_NODES = {
+    "image_search": ("Reference images", "reference_images"),
+    "palette":      ("Block palette",    "block_palette"),
+    "component_planner": ("Components", "components"),
+}
+
+# Simple ANSI colours for readability (no extra deps)
+_BOLD  = "\033[1m"
+_DIM   = "\033[2m"
+_CYAN  = "\033[36m"
+_GREEN = "\033[32m"
+_RESET = "\033[0m"
+
+
+def _print_pipeline_step(node: str, update: dict) -> None:
+    """Pretty-print a single graph node's output during e2e mode."""
+    label, key = _E2E_DISPLAY_NODES.get(node, (None, None))
+    if label is None:
+        return
+
+    value = update.get(key)
+    print(f"\n{_CYAN}{_BOLD}[{node}]{_RESET} {_BOLD}{label}:{_RESET}")
+
+    if not value:
+        print(f"  {_DIM}(none){_RESET}")
+        return
+
+    if isinstance(value, list):
+        for i, item in enumerate(value, 1):
+            print(f"  {_DIM}{i:>2}.{_RESET} {item}")
+    else:
+        print(f"  {value}")
+
+
+def run_e2e() -> None:
+    """Interactive CLI pipeline runner — no WebSocket, full step visibility."""
+    print(f"\n{_BOLD}Claude Craft — End-to-End Mode{_RESET}")
+    print(f"{_DIM}Type a build request and watch the full pipeline. Ctrl-C or 'quit' to exit.{_RESET}\n")
+
+    graph = build_graph()
+    chat_history: list[dict] = []
+
+    try:
+        while True:
+            try:
+                user_input = input(f"{_GREEN}You>{_RESET} ").strip()
+            except EOFError:
+                break
+
+            if not user_input or user_input.lower() in ("quit", "exit"):
+                break
+
+            state: AgentState = {
+                "user_message": user_input,
+                "chat_history": chat_history,
+                "intent": "",
+                "ai_response": "",
+                "schematic_name": None,
+                "schematic_path": None,
+                "build_plan": None,
+            }
+
+            print(f"\n{_DIM}── pipeline ──────────────────────────────{_RESET}")
+
+            final_state: dict = {}
+            try:
+                # stream() yields {node_name: state_update} after each node
+                for step in graph.stream(state):
+                    for node_name, node_update in step.items():
+                        print(f"{_DIM}  → {node_name}{_RESET}", end="", flush=True)
+                        _print_pipeline_step(node_name, node_update)
+                        if not _E2E_DISPLAY_NODES.get(node_name):
+                            print()  # newline after the dim arrow
+                        final_state.update(node_update)
+
+            except Exception as e:
+                print(f"\n{_BOLD}Pipeline error:{_RESET} {e}")
+                logger.error("e2e pipeline error", exc_info=True)
+                continue
+
+            # Show final AI text response
+            ai_response = final_state.get("ai_response", "")
+            if ai_response:
+                print(f"\n{_DIM}── response ──────────────────────────────{_RESET}")
+                print(f"{_BOLD}AI:{_RESET} {ai_response}")
+
+            # Show block palette summary if one was produced
+            palette = final_state.get("block_palette")
+            if palette:
+                print(f"\n{_DIM}── final palette ({len(palette)} blocks) ──────────{_RESET}")
+                for i, block in enumerate(palette, 1):
+                    print(f"  {i:>2}. {block}")
+
+            print(f"\n{_DIM}──────────────────────────────────────────{_RESET}")
+            chat_history = final_state.get("chat_history", chat_history)
+
+    except KeyboardInterrupt:
+        pass
+
+    print(f"\n{_DIM}Bye.{_RESET}\n")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import uvicorn
-    logger.info("Starting Claude Craft server on ws://127.0.0.1:8080")
-    uvicorn.run(app, host="127.0.0.1", port=8080)
+    if "-e" in sys.argv:
+        run_e2e()
+    else:
+        import uvicorn
+
+        logger.info("Starting Claude Craft server on ws://127.0.0.1:8080")
+        uvicorn.run(app, host="127.0.0.1", port=8080)
