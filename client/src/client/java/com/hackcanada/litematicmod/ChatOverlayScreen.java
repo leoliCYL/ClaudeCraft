@@ -17,25 +17,29 @@ import java.lang.reflect.Type;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.*;
-import java.text.SimpleDateFormat;
 import java.util.*;
 
 public class ChatOverlayScreen extends Screen {
 
     // ── Layout — ChatGPT style: sidebar left + chat right ──────────────────
-    private static final int SIDEBAR_W    = 115;
-    private static final int CHAT_W       = 280;
-    private static final int TOTAL_W      = SIDEBAR_W + CHAT_W;
-    private static final int TOTAL_H      = 260;
-    private static final int PAD          = 8;
-    private static final int INPUT_H      = 20;
-    private static final int BTN_H        = 20;
-    private static final int BTN_W        = (CHAT_W - PAD * 2 - 4) / 2;
-    private static final int LINE_H       = 12;
-    private static final int MAX_HISTORY  = 200;
-    private static final int MAX_SESSIONS = 8;
-    private static final int ROW_H        = 22;
-    private static final int RENAME_BTN_W = 16;
+    private static final int SIDEBAR_W     = 115;
+    private static final int CHAT_W        = 280;
+    private static final int TOTAL_W       = SIDEBAR_W + CHAT_W;
+    private static final int TOTAL_H       = 260;
+    private static final int PAD           = 8;
+    private static final int INPUT_H       = 20;
+    private static final int BTN_H         = 20;
+    private static final int BTN_W         = (CHAT_W - PAD * 2 - 4) / 2;
+    private static final int LINE_H        = 12;
+    private static final int MAX_HISTORY   = 200;
+    private static final int MAX_SESSIONS  = 8;
+    private static final int ROW_H         = 18;   // session row height
+    // Sidebar row icon widths: rename + delete
+    private static final int ICON_W        = 14;
+    private static final int ICON_GAP      = 2;
+    // Y where session list starts (below header + divider + new-chat btn)
+    // header text ~9px, divider at +14, gap 4, new-chat btn BTN_H, gap 4
+    private static final int ROW_START_OFF = 14 + 4 + BTN_H + 6; // offset from pt
 
     // Colors
     private static final int C_WHITE      = 0xFFFFFFFF;
@@ -56,6 +60,11 @@ public class ChatOverlayScreen extends Screen {
                 .resolve("claudecraft_history.json");
     }
 
+    static class SaveData {
+        int nextId = 1;
+        List<Session> sessions = new ArrayList<>();
+    }
+
     static class Session {
         String name;
         List<String> messages = new ArrayList<>();
@@ -63,8 +72,10 @@ public class ChatOverlayScreen extends Screen {
     }
 
     // ── Persistent state ─────────────────────────────────────────────────────
-    static List<Session> allSessions   = new ArrayList<>();
-    static int           activeSession = 0;
+    static List<Session> allSessions    = new ArrayList<>();
+    static int           activeSession  = 0;
+    static int           nextSessionId  = 1;   // auto-incrementing counter for names
+
     private static BackendClient persistentClient;
     private static long lastConnectAttemptMs = 0;
     private static final long RECONNECT_COOLDOWN_MS = 5000;
@@ -74,6 +85,7 @@ public class ChatOverlayScreen extends Screen {
 
     /** Index of the session currently being renamed, -1 = none. */
     private int renamingSession = -1;
+    /** The active rename field (added as drawable so focus works). */
     private TextFieldWidget renameField;
 
     public ChatOverlayScreen() { super(Text.literal("AI Chat")); }
@@ -93,14 +105,25 @@ public class ChatOverlayScreen extends Screen {
         Path f = historyFile();
         if (!Files.exists(f)) { newSession(); return; }
         try (Reader r = Files.newBufferedReader(f)) {
-            Type t = new TypeToken<List<Session>>(){}.getType();
-            List<Session> loaded = GSON.fromJson(r, t);
-            if (loaded != null && !loaded.isEmpty()) {
-                allSessions   = loaded;
+            SaveData data = GSON.fromJson(r, SaveData.class);
+            if (data != null && data.sessions != null && !data.sessions.isEmpty()) {
+                allSessions   = data.sessions;
+                nextSessionId = Math.max(data.nextId, allSessions.size() + 1);
                 activeSession = allSessions.size() - 1;
                 return;
             }
         } catch (Exception e) {
+            // try legacy format (plain List<Session>)
+            try (Reader r = Files.newBufferedReader(f)) {
+                Type t = new TypeToken<List<Session>>(){}.getType();
+                List<Session> loaded = GSON.fromJson(r, t);
+                if (loaded != null && !loaded.isEmpty()) {
+                    allSessions   = loaded;
+                    nextSessionId = loaded.size() + 1;
+                    activeSession = allSessions.size() - 1;
+                    return;
+                }
+            } catch (Exception ignored) {}
             Litemod.LOGGER.warn("Could not load chat history: {}", e.getMessage());
         }
         newSession();
@@ -110,8 +133,11 @@ public class ChatOverlayScreen extends Screen {
         try {
             Path f = historyFile();
             Files.createDirectories(f.getParent());
+            SaveData data = new SaveData();
+            data.nextId   = nextSessionId;
+            data.sessions = allSessions;
             try (Writer w = Files.newBufferedWriter(f)) {
-                GSON.toJson(allSessions, w);
+                GSON.toJson(data, w);
             }
         } catch (Exception e) {
             Litemod.LOGGER.warn("Could not save chat history: {}", e.getMessage());
@@ -119,11 +145,25 @@ public class ChatOverlayScreen extends Screen {
     }
 
     static void newSession() {
-        String name = new SimpleDateFormat("MM/dd HH:mm").format(new Date());
+        String name = "Conversation " + nextSessionId++;
         allSessions.add(new Session(name));
         activeSession = allSessions.size() - 1;
         while (allSessions.size() > MAX_SESSIONS) allSessions.remove(0);
         if (activeSession >= allSessions.size()) activeSession = allSessions.size() - 1;
+        saveHistory();
+    }
+
+    static void deleteSession(int idx) {
+        if (allSessions.size() <= 1) {
+            // keep at least one — just clear it
+            allSessions.get(0).messages.clear();
+            activeSession = 0;
+            saveHistory();
+            return;
+        }
+        allSessions.remove(idx);
+        if (activeSession >= allSessions.size()) activeSession = allSessions.size() - 1;
+        if (activeSession < 0) activeSession = 0;
         saveHistory();
     }
 
@@ -164,36 +204,51 @@ public class ChatOverlayScreen extends Screen {
         this.addDrawableChild(ButtonWidget.builder(Text.literal("Build"), btn -> onBuild())
                 .dimensions(cl + PAD + BTN_W + 4, btnY, BTN_W, BTN_H).build());
 
-        // ── "+ New Chat" button
+        // ── "+ New Chat" button — sits below the "Conversations" header + divider
+        int newBtnY = pt + 18;   // header text 9px + divider at 14 + 4 gap
         this.addDrawableChild(ButtonWidget.builder(Text.literal("+ New Chat"), btn -> {
             renamingSession = -1;
             newSession();
             this.clearAndInit();
-        }).dimensions(sl + PAD, pt + PAD, SIDEBAR_W - PAD * 2, BTN_H).build());
+        }).dimensions(sl + PAD, newBtnY, SIDEBAR_W - PAD * 2, BTN_H).build());
 
-        // ── Session rows (newest first)
-        int rowStartY = pt + PAD + BTN_H + 6;
+        // ── Session rows (newest first), starting below the new-chat button
+        int rowStartY = newBtnY + BTN_H + 4;
+        int labelW    = SIDEBAR_W - PAD * 2 - ICON_W - ICON_GAP - ICON_W - ICON_GAP;
+
         for (int i = allSessions.size() - 1; i >= 0; i--) {
             final int idx = i;
             int rowY = rowStartY + (allSessions.size() - 1 - i) * (ROW_H + 2);
             if (rowY + ROW_H > pb - PAD) break;
 
-            int labelW = SIDEBAR_W - PAD * 2 - RENAME_BTN_W - 2;
+            // If this row is being renamed, skip normal buttons — we draw a field instead
+            if (renamingSession == idx) continue;
+
             String label = truncate(allSessions.get(i).name, labelW);
+            int iconX = sl + PAD + labelW + ICON_GAP;
+
             this.addDrawableChild(ButtonWidget.builder(Text.literal(label), btn -> {
                 renamingSession = -1;
                 activeSession   = idx;
                 this.clearAndInit();
             }).dimensions(sl + PAD, rowY, labelW, ROW_H).build());
 
-            // ✎ rename button
+            // ✎ rename icon
             this.addDrawableChild(ButtonWidget.builder(Text.literal("\u270E"), btn -> {
                 renamingSession = idx;
                 this.clearAndInit();
-            }).dimensions(sl + PAD + labelW + 2, rowY, RENAME_BTN_W, ROW_H).build());
+            }).dimensions(iconX, rowY, ICON_W, ROW_H).build());
+
+            // × delete icon
+            this.addDrawableChild(ButtonWidget.builder(Text.literal("\u00D7"), btn -> {
+                renamingSession = -1;
+                deleteSession(idx);
+                this.clearAndInit();
+            }).dimensions(iconX + ICON_W + ICON_GAP, rowY, ICON_W, ROW_H).build());
         }
 
-        // ── Rename inline text field
+        // ── Rename inline field — added as DRAWABLE so keyboard focus works
+        renameField = null;
         if (renamingSession >= 0 && renamingSession < allSessions.size()) {
             int rowIdx = allSessions.size() - 1 - renamingSession;
             int rowY   = rowStartY + rowIdx * (ROW_H + 2);
@@ -208,10 +263,9 @@ public class ChatOverlayScreen extends Screen {
             renameField.setText(allSessions.get(renamingSession).name);
             renameField.setSelectionStart(0);
             renameField.setSelectionEnd(renameField.getText().length());
-            this.addSelectableChild(renameField);
-            this.setInitialFocus(renameField);
-        } else {
-            renameField = null;
+            renameField.setFocused(true);
+            this.addDrawableChild(renameField);   // drawable = focus + render both work
+            this.setFocused(renameField);
         }
     }
 
@@ -308,8 +362,8 @@ public class ChatOverlayScreen extends Screen {
     public boolean keyPressed(KeyInput input) {
         int key = input.key();
 
-        // Rename field: Enter confirms, Escape cancels
-        if (renameField != null && getFocused() == renameField) {
+        // Rename field active: Enter = confirm, Escape = cancel
+        if (renameField != null && renameField.isFocused()) {
             if (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER) {
                 commitRename(); return true;
             }
@@ -331,7 +385,7 @@ public class ChatOverlayScreen extends Screen {
 
     @Override
     public void renderBackground(DrawContext ctx, int mx, int my, float delta) {
-        // transparent
+        // transparent — world shows through
     }
 
     // ── Render ───────────────────────────────────────────────────────────────
@@ -344,51 +398,54 @@ public class ChatOverlayScreen extends Screen {
         int sr  = cl;
         int cr  = cl + CHAT_W;
 
-        // Sidebar background
+        // ── Sidebar background
         ctx.fill(sl, pt, sr, pb, C_SIDEBAR_BG);
 
-        // Sidebar header
+        // ── Sidebar header "Conversations"
         ctx.drawText(this.textRenderer, "Conversations", sl + PAD, pt + 4, C_HDR, false);
         ctx.fill(sl, pt + 14, sr, pt + 15, C_DIVIDER);
 
-        // Active session highlight
-        int rowStartY = pt + PAD + BTN_H + 6;
+        // ── Row highlights (draw before widgets so they sit behind button text)
+        int newBtnY   = pt + 18;
+        int rowStartY = newBtnY + BTN_H + 4;
+        int labelW    = SIDEBAR_W - PAD * 2 - ICON_W - ICON_GAP - ICON_W - ICON_GAP;
+
+        // Active row
         if (!allSessions.isEmpty() && renamingSession != activeSession) {
             int rowIdx = allSessions.size() - 1 - activeSession;
             int rowY   = rowStartY + rowIdx * (ROW_H + 2);
             if (rowY + ROW_H <= pb - PAD)
                 ctx.fill(sl + PAD - 2, rowY - 1, sr - PAD + 2, rowY + ROW_H + 1, C_ROW_ACT);
         }
-
-        // Rename row highlight
+        // Rename row
         if (renamingSession >= 0 && renamingSession < allSessions.size()) {
             int rowIdx = allSessions.size() - 1 - renamingSession;
             int rowY   = rowStartY + rowIdx * (ROW_H + 2);
             ctx.fill(sl + PAD - 2, rowY - 1, sr - PAD + 2, rowY + ROW_H + 1, C_RENAME_BG);
         }
 
-        // Vertical divider
+        // ── Vertical divider
         ctx.fill(sr, pt, sr + 1, pb, C_DIVIDER);
 
-        // Chat panel background
+        // ── Chat panel background
         ctx.fill(cl, pt, cr, pb, C_CHAT_BG);
 
-        // Chat header bar
+        // ── Chat header bar
         ctx.fill(cl, pt, cr, pt + 18, (int) 0xEE111118);
         String hdrName = allSessions.isEmpty() ? "New Chat" : allSessions.get(activeSession).name;
         ctx.drawText(this.textRenderer, hdrName, cl + PAD, pt + 5, C_WHITE, false);
 
-        // Connection dot
+        // ── Connection dot
         boolean connected = persistentClient != null && persistentClient.isOpen();
         ctx.drawText(this.textRenderer, "\u25CF", cr - 14, pt + 5,
                 connected ? 0xFF55FF55 : 0xFFFF5555, true);
 
-        // Input area divider
+        // ── Input area divider
         int btnY   = pb - PAD - BTN_H;
         int inputY = btnY - PAD - INPUT_H;
         ctx.fill(cl + PAD, inputY - 4, cr - PAD, inputY - 3, C_DIVIDER);
 
-        // Chat history
+        // ── Chat history
         int textTop    = pt + 22;
         int textBottom = inputY - 6;
         int maxTextW   = CHAT_W - PAD * 2;
@@ -407,24 +464,23 @@ public class ChatOverlayScreen extends Screen {
         int y = textTop;
         for (int i = start; i < lines.size(); i++) {
             String[] e = lines.get(i);
-            int color = "AI".equals(e[0])  ? C_AI    :
-                        "You".equals(e[0]) ? C_WHITE  : C_SYS;
+            int color = "AI".equals(e[0])  ? C_AI   :
+                        "You".equals(e[0]) ? C_WHITE : C_SYS;
             ctx.drawText(this.textRenderer, e[1], cl + PAD, y, color, true);
             y += LINE_H;
         }
 
-        // Widgets
+        // ── Widgets (buttons, input field, rename field)
         super.render(ctx, mouseX, mouseY, delta);
         inputField.render(ctx, mouseX, mouseY, delta);
-        if (renameField != null) renameField.render(ctx, mouseX, mouseY, delta);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
     private String truncate(String text, int maxWidth) {
         String t = text;
-        while (t.length() > 1 && this.textRenderer.getWidth(t + "...") > maxWidth)
+        while (t.length() > 1 && this.textRenderer.getWidth(t + "..") > maxWidth)
             t = t.substring(0, t.length() - 1);
-        return t.length() < text.length() ? t + "..." : t;
+        return t.length() < text.length() ? t + ".." : t;
     }
 
     private List<String> wrapText(String text, int maxWidth) {
