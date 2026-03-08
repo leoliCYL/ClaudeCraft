@@ -303,12 +303,163 @@ def run_e2e() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Interactive prompt mode  (-p flag)
+# ---------------------------------------------------------------------------
+
+# Holds the most-recently connected WebSocket so the prompt thread can push to it
+_active_websocket: WebSocket | None = None
+
+
+async def _prompt_loop() -> None:
+    """
+    Runs in the background while the server is live.
+    Reads build prompts from stdin and sends them as [BUILD] messages
+    so they go through the exact same pipeline as Minecraft client messages.
+    """
+    print(f"\n{_BOLD}ClaudeCraft prompt mode{_RESET}")
+    print(f"{_DIM}Type a build request below and press Enter.")
+    print(f"The pipeline will run and stream results to the connected Minecraft client.")
+    print(f"Ctrl-C to quit.{_RESET}\n")
+
+    loop = asyncio.get_event_loop()
+
+    while True:
+        try:
+            user_input = await loop.run_in_executor(
+                None, lambda: input(f"{_GREEN}Build>{_RESET} ").strip()
+            )
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if not user_input or user_input.lower() in ("quit", "exit"):
+            break
+
+        ws = _active_websocket
+        if ws is None:
+            print(f"{_DIM}  (no Minecraft client connected — waiting…){_RESET}")
+            continue
+
+        # Inject the message as if it came from the Minecraft client
+        # The websocket_endpoint loop is already handling receive_text(),
+        # so we fake an inbound message by directly running the pipeline
+        # and pushing results back through the open socket.
+        print(f"{_DIM}  → sending to pipeline…{_RESET}")
+        asyncio.create_task(_run_build_for_prompt(ws, user_input))
+
+
+async def _run_build_for_prompt(websocket: WebSocket, build_request: str) -> None:
+    """Run the LangGraph pipeline for a terminal prompt and stream results to Minecraft."""
+    state: AgentState = {
+        "user_message": build_request,
+        "chat_history": [],
+        "intent": "build",
+        "ai_response": "",
+        "schematic_name": None,
+        "schematic_path": None,
+        "rag_score": None,
+        "reference_images": None,
+        "block_palette": None,
+        "palette_map": None,
+        "components": None,
+        "component_results": [],
+        "combined_blocks": None,
+        "build_json": None,
+        "build_layers": None,
+        "total_layers": None,
+        "build_plan": None,
+    }
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: agent.invoke(state)
+        )
+
+        ai_response = result.get("ai_response", "")
+        if ai_response:
+            print(f"{_BOLD}AI:{_RESET} {ai_response}")
+            await websocket.send_text(ai_response)
+
+        # Stream build layers to Minecraft
+        build_layers = result.get("build_layers")
+        total_layers = result.get("total_layers", 0)
+        schematic_name = result.get("schematic_name") or build_request
+
+        # Fallback: RAG hit returned a schematic_path but no build_layers
+        if not build_layers and result.get("schematic_path"):
+            try:
+                parsed = parse_litematic(result["schematic_path"])
+                build_layers = parsed["layers"]
+                total_layers = parsed["total_layers"]
+                schematic_name = parsed["name"]
+            except Exception as pe:
+                logger.error(f"Fallback parse failed: {pe}")
+
+        if build_layers and total_layers:
+            await websocket.send_text(json.dumps({
+                "type": "BUILD_START",
+                "name": schematic_name,
+                "totalLayers": total_layers,
+            }))
+            print(f"{_GREEN}✓ BUILD_START: {schematic_name} ({total_layers} layers){_RESET}")
+
+            for i, layer_data in build_layers.items():
+                await websocket.send_text(json.dumps({
+                    "type": "BUILD_LAYER",
+                    "layerIndex": int(i),
+                    "yLevel": layer_data["y_level"],
+                    "blocks": layer_data["blocks"],
+                }))
+                await asyncio.sleep(LAYER_DELAY)
+
+            await websocket.send_text(json.dumps({"type": "BUILD_DONE"}))
+            print(f"{_GREEN}✓ BUILD_DONE — streamed to Minecraft{_RESET}\n")
+        else:
+            print(f"{_DIM}  (pipeline returned no layers){_RESET}\n")
+
+    except Exception as e:
+        print(f"{_BOLD}Pipeline error:{_RESET} {e}")
+        logger.error("Prompt pipeline error", exc_info=True)
+
+
+# Patch websocket_endpoint to track the active socket
+_original_ws_endpoint = websocket_endpoint.__wrapped__ if hasattr(websocket_endpoint, "__wrapped__") else None
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     if "-e" in sys.argv:
         run_e2e()
+    elif "-p" in sys.argv:
+        # Prompt mode: start the server AND a terminal prompt loop
+        import uvicorn
+
+        # Monkey-patch the websocket handler to track the active connection
+        original_handler = app.routes[-1].endpoint  # the websocket_endpoint func
+
+        async def _tracking_ws_endpoint(websocket: WebSocket):
+            global _active_websocket
+            _active_websocket = websocket
+            logger.info("Minecraft client connected (prompt mode).")
+            try:
+                await original_handler(websocket)
+            finally:
+                _active_websocket = None
+                logger.info("Minecraft client disconnected (prompt mode).")
+
+        # Replace the route
+        app.routes[-1].endpoint = _tracking_ws_endpoint
+
+        async def _serve_with_prompt():
+            config = uvicorn.Config(app, host="127.0.0.1", port=8080, log_level="warning")
+            server = uvicorn.Server(config)
+            print(f"{_BOLD}Starting server on ws://127.0.0.1:8080{_RESET}")
+            print(f"{_DIM}Open Minecraft first, then type your build prompt below.{_RESET}\n")
+            await asyncio.gather(server.serve(), _prompt_loop())
+
+        asyncio.run(_serve_with_prompt())
     else:
         import uvicorn
 
