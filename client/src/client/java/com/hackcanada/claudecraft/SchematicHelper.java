@@ -3,6 +3,8 @@ package com.hackcanada.claudecraft;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 import net.minecraft.nbt.*;
 import net.minecraft.registry.Registries;
 import net.minecraft.server.world.ServerWorld;
@@ -245,9 +247,42 @@ public class SchematicHelper {
                             .getSchematicPlacementManager()
                             .addSchematicPlacement(placement, true);
 
-                    // 4. Switch to PASTE_SCHEMATIC tool so user can paste with wand
+                    // 4. Switch to PASTE_SCHEMATIC tool so the stick becomes the paste wand
                     fi.dy.masa.litematica.data.DataManager
                             .setToolMode(fi.dy.masa.litematica.tool.ToolMode.PASTE_SCHEMATIC);
+
+                    // 5. Give the player a stick in their main hand if they don't have one,
+                    //    because Litematica's default tool item is a stick.
+                    MinecraftClient mc2 = MinecraftClient.getInstance();
+                    if (mc2.player != null) {
+                        ItemStack held = mc2.player.getMainHandStack();
+                        if (held.isEmpty() || held.getItem() != Items.STICK) {
+                            // Find an existing stick in the hotbar first
+                            boolean found = false;
+                            for (int slot = 0; slot < 9; slot++) {
+                                ItemStack s = mc2.player.getInventory().getStack(slot);
+                                if (s.getItem() == Items.STICK) {
+                                    mc2.player.getInventory().swapSlotWithHotbar(slot);
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            // If no stick in hotbar, put one in the current slot
+                            if (!found) {
+                                int sel = mc2.player.getInventory().getSlotWithStack(
+                                        new ItemStack(Items.STICK));
+                                if (sel < 0) {
+                                    // No stick anywhere — inject one into slot 0
+                                    mc2.player.getInventory().setStack(0, new ItemStack(Items.STICK));
+                                    mc2.player.getInventory().swapSlotWithHotbar(0);
+                                }
+                            }
+                        }
+                        mc2.player.sendMessage(
+                            net.minecraft.text.Text.literal(
+                                "§a[ClaudeCraft] Schematic loaded! §eRight-click with your stick to paste."),
+                            false);
+                    }
 
                     ClaudeCraft.LOGGER.info("Schematic placement added and tool set to PASTE_SCHEMATIC!");
                 } catch (Exception ex) {

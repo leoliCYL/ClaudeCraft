@@ -19,7 +19,8 @@
 			"com.hackcanada.claudecraft.ClaudeCraft"
 		],
 		"client": [
-			"com.hackcanada.claudecraft.ClaudeCraftClient"
+			"com.hackcanada.claudecraft.ClaudeCraftClient",
+			"com.hackcanada.litematicmod.LitemodClient"
 		]
 	},
 	"mixins": [
