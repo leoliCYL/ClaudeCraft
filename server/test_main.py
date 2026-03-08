@@ -33,88 +33,10 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
-from google import genai
-
-load_dotenv()
 
 from lib.schematic_parser import parse_litematic
 
-# ---------------------------------------------------------------------------
-# Gemini client
-# ---------------------------------------------------------------------------
-
-_gemini = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
-
-CHAT_SYSTEM_PROMPT = (
-    "You are ClaudeCraft, a helpful Minecraft assistant. "
-    "Answer questions about Minecraft clearly and concisely. "
-    "If the user asks to build something, say you are generating the schematic now. "
-    "Keep replies short (2-3 sentences max)."
-)
-
-BUILD_SYSTEM_PROMPT = """You are a Minecraft block placement AI. The user wants to build something.
-Return ONLY a valid JSON object — no explanation, no markdown, no code fences.
-
-The JSON must look like this:
-{
-  "name": "structure name",
-  "layers": [
-    {
-      "y_level": 0,
-      "blocks": [
-        {"x": 0, "y": 0, "z": 0, "block": "minecraft:stone"},
-        {"x": 1, "y": 0, "z": 0, "block": "minecraft:stone"}
-      ]
-    },
-    {
-      "y_level": 1,
-      "blocks": [
-        {"x": 0, "y": 1, "z": 0, "block": "minecraft:oak_planks"}
-      ]
-    }
-  ]
-}
-
-Rules:
-- Use only valid Minecraft 1.21 block IDs (prefixed with "minecraft:")
-- Keep structures small (max 10x10x10 blocks) — quality over quantity
-- Each y_level layer must have at least 1 block
-- x/z range: 0-9, y matches y_level
-- Return ONLY the JSON object, nothing else."""
-
-
-def ask_gemini(user_message: str) -> str:
-    """Call Gemini for chat and return a plain-text response."""
-    try:
-        prompt = f"{CHAT_SYSTEM_PROMPT}\n\nPlayer: {user_message}\nClaudeCraft:"
-        response = _gemini.models.generate_content(
-            model="models/gemini-2.5-flash",
-            contents=prompt,
-        )
-        return response.text.strip()
-    except Exception as e:
-        logger.error(f"Gemini chat error: {e}")
-        return f"(AI unavailable: {e})"
-
-
-def ask_gemini_build(build_request: str) -> dict | None:
-    """Call Gemini to generate a block structure. Returns parsed JSON dict or None."""
-    try:
-        prompt = f"{BUILD_SYSTEM_PROMPT}\n\nUser wants to build: {build_request}\n\nJSON:"
-        response = _gemini.models.generate_content(
-            model="models/gemini-2.5-flash",
-            contents=prompt,
-        )
-        raw = response.text.strip()
-        # Strip markdown code fences if Gemini added them anyway
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        return json.loads(raw.strip())
-    except Exception as e:
-        logger.error(f"Gemini build error: {e}")
-        return None
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -191,9 +113,7 @@ schematic_registry = load_schematic_registry()
 
 @app.websocket("/")
 async def websocket_endpoint(websocket: WebSocket):
-    global _active_websocket
     await websocket.accept()
-    _active_websocket = websocket
     logger.info("Minecraft client connected.")
 
     try:
@@ -201,151 +121,65 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             logger.info(f">>> CLIENT: {data}")
 
-            is_build = data.strip().startswith("[BUILD]")
+            # ── 1. Send stub AI text response ──────────────────────────────
+            stub_reply = f"[Test Server] Received: {data}"
+            await websocket.send_text(stub_reply)
+            logger.info(f"<<< STUB: {stub_reply}")
 
-            if is_build:
-                # ── BUILD path: use Gemini to generate a block structure ───
-                build_msg = data.strip()[len("[BUILD]"):].strip()
+            # ── 2. Check if this is a build request ────────────────────────
+            schematic_name, schematic_path = find_schematic(data, schematic_registry)
 
-                # Send a quick acknowledgement first
-                await websocket.send_text(f"Generating '{build_msg}' now...")
+            if not schematic_name or not schematic_path:
+                logger.info("No schematic match — chat only response sent.")
+                continue
 
-                # Ask Gemini to generate JSON block data
-                build_data = await asyncio.get_event_loop().run_in_executor(
-                    None, ask_gemini_build, build_msg
+            logger.info(f"Matched schematic: {schematic_name} → {schematic_path}")
+
+            # ── 3. Parse the .litematic file ───────────────────────────────
+            try:
+                parsed = parse_litematic(schematic_path)
+            except Exception as e:
+                logger.error(f"Failed to parse schematic: {e}", exc_info=True)
+                await websocket.send_text(f"Error parsing schematic '{schematic_name}': {e}")
+                continue
+
+            total_layers = parsed["total_layers"]
+
+            # ── 4. Stream BUILD_START ──────────────────────────────────────
+            start_msg = json.dumps({
+                "type": "BUILD_START",
+                "name": parsed["name"],
+                "totalLayers": total_layers,
+            })
+            await websocket.send_text(start_msg)
+            logger.info(f"<<< BUILD_START: {parsed['name']} ({total_layers} layers)")
+
+            # ── 5. Stream each layer ───────────────────────────────────────
+            for i, layer_data in parsed["layers"].items():
+                layer_msg = json.dumps({
+                    "type": "BUILD_LAYER",
+                    "layerIndex": int(i),
+                    "yLevel": layer_data["y_level"],
+                    "blocks": layer_data["blocks"],
+                })
+                await websocket.send_text(layer_msg)
+                logger.info(
+                    f"<<< BUILD_LAYER {i}/{total_layers}: "
+                    f"Y={layer_data['y_level']}, {len(layer_data['blocks'])} blocks"
                 )
+                await asyncio.sleep(LAYER_DELAY)
 
-                if build_data and "layers" in build_data:
-                    layers = build_data["layers"]
-                    total_layers = len(layers)
-                    schematic_name = build_data.get("name", build_msg)
-
-                    # BUILD_START
-                    await websocket.send_text(json.dumps({
-                        "type": "BUILD_START",
-                        "name": schematic_name,
-                        "totalLayers": total_layers,
-                    }))
-                    logger.info(f"<<< BUILD_START: {schematic_name} ({total_layers} layers)")
-
-                    # BUILD_LAYER × N
-                    for i, layer in enumerate(layers):
-                        await websocket.send_text(json.dumps({
-                            "type": "BUILD_LAYER",
-                            "layerIndex": i,
-                            "yLevel": layer.get("y_level", i),
-                            "blocks": layer.get("blocks", []),
-                        }))
-                        logger.info(
-                            f"<<< BUILD_LAYER {i}/{total_layers}: "
-                            f"Y={layer.get('y_level', i)}, {len(layer.get('blocks', []))} blocks"
-                        )
-                        await asyncio.sleep(LAYER_DELAY)
-
-                    # BUILD_DONE
-                    await websocket.send_text(json.dumps({"type": "BUILD_DONE"}))
-                    logger.info("<<< BUILD_DONE")
-                else:
-                    logger.error("Gemini build returned no usable data.")
-                    await websocket.send_text("Sorry, I couldn't generate that structure. Try describing it differently.")
-
-            else:
-                # ── CHAT path: Gemini for fast conversational replies ──────
-                ai_reply = await asyncio.get_event_loop().run_in_executor(
-                    None, ask_gemini, data
-                )
-                await websocket.send_text(ai_reply)
-                logger.info(f"<<< GEMINI: {ai_reply[:80]}")
+            # ── 6. Stream BUILD_DONE ───────────────────────────────────────
+            done_msg = json.dumps({"type": "BUILD_DONE"})
+            await websocket.send_text(done_msg)
+            logger.info("<<< BUILD_DONE")
 
     except WebSocketDisconnect:
-        _active_websocket = None
         logger.info("Minecraft client disconnected.")
 
 
 # ---------------------------------------------------------------------------
-# Interactive prompt mode  (-p flag)
-# ---------------------------------------------------------------------------
-
-_active_websocket: WebSocket | None = None
-
-_BOLD  = "\033[1m"
-_DIM   = "\033[2m"
-_GREEN = "\033[32m"
-_RESET = "\033[0m"
-
-
-async def _prompt_loop() -> None:
-    """Read build prompts from stdin and stream results to the connected Minecraft client."""
-    print(f"\n{_BOLD}ClaudeCraft prompt mode{_RESET}")
-    print(f"{_DIM}Type a build request below and press Enter.")
-    print(f"The pipeline will run and stream results to the connected Minecraft client.")
-    print(f"Ctrl-C to quit.{_RESET}\n")
-
-    loop = asyncio.get_event_loop()
-
-    while True:
-        try:
-            user_input = await loop.run_in_executor(
-                None, lambda: input(f"{_GREEN}Build>{_RESET} ").strip()
-            )
-        except (EOFError, KeyboardInterrupt):
-            break
-
-        if not user_input or user_input.lower() in ("quit", "exit"):
-            break
-
-        ws = _active_websocket
-        if ws is None:
-            print(f"{_DIM}  (no Minecraft client connected — waiting…){_RESET}")
-            continue
-
-        print(f"{_DIM}  → asking Gemini to generate '{user_input}'…{_RESET}")
-        asyncio.create_task(_run_build_for_prompt(ws, user_input))
-
-
-async def _run_build_for_prompt(websocket: WebSocket, build_request: str) -> None:
-    """Ask Gemini to generate block data and stream BUILD_* packets to Minecraft."""
-    try:
-        await websocket.send_text(f"Generating '{build_request}' now...")
-
-        build_data = await asyncio.get_event_loop().run_in_executor(
-            None, ask_gemini_build, build_request
-        )
-
-        if build_data and "layers" in build_data:
-            layers = build_data["layers"]
-            total_layers = len(layers)
-            schematic_name = build_data.get("name", build_request)
-
-            await websocket.send_text(json.dumps({
-                "type": "BUILD_START",
-                "name": schematic_name,
-                "totalLayers": total_layers,
-            }))
-            print(f"{_GREEN}✓ BUILD_START: {schematic_name} ({total_layers} layers){_RESET}")
-
-            for i, layer in enumerate(layers):
-                await websocket.send_text(json.dumps({
-                    "type": "BUILD_LAYER",
-                    "layerIndex": i,
-                    "yLevel": layer.get("y_level", i),
-                    "blocks": layer.get("blocks", []),
-                }))
-                await asyncio.sleep(LAYER_DELAY)
-
-            await websocket.send_text(json.dumps({"type": "BUILD_DONE"}))
-            print(f"{_GREEN}✓ BUILD_DONE — streamed to Minecraft{_RESET}\n")
-        else:
-            print(f"  (Gemini returned no usable data)\n")
-            await websocket.send_text("Sorry, I couldn't generate that structure. Try describing it differently.")
-
-    except Exception as e:
-        print(f"{_BOLD}Build error:{_RESET} {e}")
-        logger.error("Prompt build error", exc_info=True)
-
-
-# ---------------------------------------------------------------------------
-# CLI parse mode  (--parse flag)
+# CLI parse mode  (-p flag)
 # ---------------------------------------------------------------------------
 
 def run_parse_mode() -> None:
@@ -404,20 +238,8 @@ def run_parse_mode() -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    if "--parse" in sys.argv:
+    if "-p" in sys.argv:
         run_parse_mode()
-    elif "-p" in sys.argv:
-        # Prompt mode: server + terminal input loop running together
-        import uvicorn
-
-        async def _serve_with_prompt():
-            config = uvicorn.Config(app, host="127.0.0.1", port=8080, log_level="warning")
-            server = uvicorn.Server(config)
-            print(f"{_BOLD}Starting server on ws://127.0.0.1:8080{_RESET}")
-            print(f"{_DIM}Open Minecraft first, then type your build prompt below.{_RESET}\n")
-            await asyncio.gather(server.serve(), _prompt_loop())
-
-        asyncio.run(_serve_with_prompt())
     else:
         import uvicorn
         logger.info("Starting Litematica test server on ws://127.0.0.1:8080")
