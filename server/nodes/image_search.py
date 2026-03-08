@@ -1,50 +1,75 @@
 """
 Image Search node — finds reference images for the build request.
 
+Uses DuckDuckGo image search (no API key required) to find reference images.
+Images are kept in memory as base64 data URLs — no disk writes.
+
 Input:  user_message (build request)
-Output: reference_images (list of image URLs/paths)
+Output: reference_images (list of base64 data URL strings)
 """
 
 import logging
-import re
+import base64
+import httpx
+
+from duckduckgo_search import DDGS
 
 logger = logging.getLogger(__name__)
 
-# Perplexity Setup (Using OpenAI-compatible SDK)
-PPLX_API_KEY = os.getenv("PERPLEXITY_API_KEY")
-pplx_client = OpenAI(api_key=PPLX_API_KEY, base_url="https://api.perplexity.ai") if PPLX_API_KEY else None
 
-# --- Constants & Helpers ---
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
-URL_REGEX = re.compile(r'(https?://[^\s]+)', re.IGNORECASE)
+def _download_as_data_url(url: str) -> str | None:
+    """Download an image URL and return it as a base64 data URL, or None on failure."""
+    try:
+        resp = httpx.get(url, timeout=5, follow_redirects=True)
+        if resp.status_code != 200:
+            return None
+        content_type = resp.headers.get("content-type", "")
+        if "image" not in content_type:
+            return None
 
-def extract_image_urls(text: str) -> list[str]:
-    urls = URL_REGEX.findall(text)
-    return [url for url in urls if any(url.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)]
+        # Normalize MIME type
+        if "png" in content_type:
+            mime = "image/png"
+        elif "webp" in content_type:
+            mime = "image/webp"
+        else:
+            mime = "image/jpeg"
+
+        b64 = base64.b64encode(resp.content).decode()
+        return f"data:{mime};base64,{b64}"
+    except Exception as e:
+        logger.debug(f"[image_search] Failed to download {url}: {e}")
+        return None
+
 
 def search_images(state: dict) -> dict:
     """Search for reference images matching the build request."""
-    
     prompt = state.get("user_message", "")
-    logger.info(f"[image_search] Searching images for: {prompt[:50]}...")
+    query = f"{prompt} minecraft build"
+    logger.info(f"\033[32m[image_search] Searching DuckDuckGo images for: {query[:60]}...\033[0m")
 
     reference_images = []
 
-    if pplx_client:
-        query = f"Provide a list of direct image URLs (ending in .jpg or .png) for: {prompt}"
-        
-        try:
-            response = pplx_client.chat.completions.create(
-                model="sonar-pro",
-                messages=[{"role": "user", "content": query}]
-            )
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.images(query, max_results=5))
 
-            content = response.choices[0].message.content
-            reference_images = extract_image_urls(content)
+        logger.info(f"[image_search] Got {len(results)} image results from DDG")
 
-        except Exception as e:
-            logger.error(f"Perplexity Search Error: {e}")
+        for result in results:
+            url = result.get("image", "")
+            if not url:
+                continue
+            data_url = _download_as_data_url(url)
+            if data_url:
+                reference_images.append(data_url)
+                logger.info(f"[image_search] Downloaded image from {url[:60]}... ({len(data_url)//1024}KB in RAM)")
+
+    except Exception as e:
+        logger.error(f"[image_search] DuckDuckGo search failed: {e}")
+
+    logger.info(f"[image_search] {len(reference_images)} images in memory")
 
     return {
-        "reference_images": reference_images
+        "reference_images": reference_images,
     }

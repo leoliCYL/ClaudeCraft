@@ -6,15 +6,9 @@ import logging
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from lib.llm_factory import get_llm
+from prompts.system_prompts import CHAT_SYSTEM
 
 logger = logging.getLogger(__name__)
-
-_CHAT_SYSTEM = """\
-You are a friendly and knowledgeable Minecraft assistant called Claude Craft.
-You chat with the player about anything Minecraft-related: tips, strategies,
-lore, building advice, redstone, mobs, enchantments, etc.
-Keep responses concise (2-3 sentences) since they appear in a small in-game overlay.
-Be enthusiastic and helpful!"""
 
 
 def chat_respond(state: dict) -> dict:
@@ -22,7 +16,7 @@ def chat_respond(state: dict) -> dict:
     llm = get_llm(temperature=0.7)
 
     # Build message list from history + current message
-    messages = [SystemMessage(content=_CHAT_SYSTEM)]
+    messages = [SystemMessage(content=CHAT_SYSTEM)]
 
     for msg in state.get("chat_history", []):
         if msg["role"] == "user":

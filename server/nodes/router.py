@@ -8,19 +8,11 @@ import logging
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from lib.llm_factory import get_llm
+from prompts.system_prompts import ROUTER_SYSTEM
 
 logger = logging.getLogger(__name__)
 
 _BUILD_KEYWORDS = r'\b(build|construct|create|make|place|load|generate|spawn|put)\b'
-
-_ROUTER_SYSTEM = """\
-You are an intent classifier for a Minecraft AI assistant.
-
-Given the player's message, respond with EXACTLY one word:
-- "build"  — if the player is asking to build, construct, create, load, or place something in the world
-- "chat"   — for everything else (questions, greetings, general conversation)
-
-Respond with ONLY the single word. No punctuation, no explanation."""
 
 
 def route_intent(state: dict) -> dict:
@@ -36,7 +28,7 @@ def route_intent(state: dict) -> dict:
     try:
         llm = get_llm(temperature=0.0)
         result = llm.invoke([
-            SystemMessage(content=_ROUTER_SYSTEM),
+            SystemMessage(content=ROUTER_SYSTEM),
             HumanMessage(content=state["user_message"]),
         ])
         intent = result.content.strip().lower()

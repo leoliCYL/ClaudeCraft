@@ -7,14 +7,9 @@ import logging
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from lib.llm_factory import get_llm
 from lib.rag import retrieve_schematic
+from prompts.system_prompts import BUILD_SYSTEM
 
 logger = logging.getLogger(__name__)
-
-_BUILD_SYSTEM = """\
-You are a Minecraft build assistant called Claude Craft.
-The player has asked you to build something. Acknowledge their request
-enthusiastically in 1-2 sentences. Mention that you're loading the schematic
-for them. Keep it concise for the in-game overlay."""
 
 
 def build_respond(state: dict) -> dict:
@@ -27,7 +22,7 @@ def build_respond(state: dict) -> dict:
     llm = get_llm(temperature=0.7)
 
     # Generate the conversational reply
-    messages = [SystemMessage(content=_BUILD_SYSTEM)]
+    messages = [SystemMessage(content=BUILD_SYSTEM)]
     for msg in state.get("chat_history", []):
         if msg["role"] == "user":
             messages.append(HumanMessage(content=msg["content"]))

@@ -24,6 +24,7 @@ from nodes.combiner import combine_components
 from nodes.converter import convert_to_layers
 
 logger = logging.getLogger(__name__)
+THRESHOLD = 0.9
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +49,7 @@ class AgentState(TypedDict):
     components: Optional[list]                 # component specs from planner
     component_results: Optional[list]          # built component block data
     combined_blocks: Optional[list]            # merged block list
+    build_json: Optional[dict]                 # full JSON {palette, components, placements}
     build_layers: Optional[dict]               # Y-grouped layers for streaming
     total_layers: Optional[int]                # number of Y layers
 
@@ -71,10 +73,10 @@ def _build_decision(state: AgentState) -> str:
     - Otherwise -> 'generate' (run the generation pipeline)
     """
     score = state.get("rag_score", 0.0)
-    if state.get("schematic_path") and score >= 0.7:
-        logger.info(f"RAG score {score:.3f} >= 0.7 — using existing schematic")
+    if state.get("schematic_path") and score >= THRESHOLD:
+        logger.info(f"\033[32mRAG score {score:.3f} >= {THRESHOLD} — using existing schematic\033[0m")
         return "rag_hit"
-    logger.info(f"RAG score {score:.3f} < 0.7 — entering generation pipeline")
+    logger.info(f"\033[32mRAG score {score:.3f} < {THRESHOLD} — entering generation pipeline\033[0m")
     return "generate"
 
 
@@ -106,10 +108,10 @@ def build_graph():
     # Generation pipeline nodes
     graph.add_node("image_search", search_images)
     graph.add_node("palette", extract_palette)
-    graph.add_node("component_planner", plan_components)
-    graph.add_node("component_builder", build_component)
-    graph.add_node("combiner", combine_components)
-    graph.add_node("converter", convert_to_layers)
+    graph.add_node("component_planner", plan_components)    # mark's thing
+    graph.add_node("component_builder", build_component)    # create components individually
+    graph.add_node("combiner", combine_components)          # combine components to make final build
+    graph.add_node("converter", convert_to_layers)          # convert json into litematica files
 
     # ── Edges ──
 

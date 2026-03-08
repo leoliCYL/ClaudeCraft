@@ -15,15 +15,18 @@ from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
 
+# Base server directory (lib/ -> server/)
+_SERVER_DIR = Path(__file__).parent.parent
+
 # Directories to scan for .litematic files (in priority order)
 _SCHEMATIC_DIRS = [
-    Path(__file__).parent / ".." / "client" / "run" / "schematics",
-    Path(__file__).parent / ".." / "client" / "run" / "litematics",
-    Path(__file__).parent / "assets",
+    _SERVER_DIR / ".." / "client" / "run" / "schematics",
+    _SERVER_DIR / ".." / "client" / "run" / "litematics",
+    _SERVER_DIR / "assets",
 ]
 
 # JSON metadata file
-_METADATA_PATH = Path(__file__).parent / "schematics.json"
+_METADATA_PATH = _SERVER_DIR / "schematics.json"
 
 
 def _load_metadata() -> dict:
@@ -127,5 +130,5 @@ def retrieve_schematic(query: str, k: int = 1) -> Optional[dict]:
     best_doc, distance = results[0]
     # FAISS returns L2 distance — convert to a 0-1 similarity score
     score = 1.0 / (1.0 + distance)
-    logger.info(f"RAG match for '{query}': {best_doc.metadata['name']} (score={score:.3f})")
+    logger.info(f"\033[32mRAG match for '{query}': {best_doc.metadata['name']} (score={score:.3f})\033[0m")
     return {"name": best_doc.metadata["name"], "path": best_doc.metadata["path"], "score": score}
