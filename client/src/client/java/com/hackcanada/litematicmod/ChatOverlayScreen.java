@@ -404,13 +404,13 @@ public class ChatOverlayScreen extends Screen {
             sendButton.active  = hasText;
             buildButton.active = hasText;
         }
+        // Auto-reconnect: silently retry every RECONNECT_COOLDOWN_MS if not connected
+        ensureConnected();
     }
 
     // ── Connection ───────────────────────────────────────────────────────────
     private void ensureConnected() {
         if (persistentClient != null && persistentClient.isOpen()) return;
-        if (persistentClient != null &&
-                persistentClient.getReadyState() == org.java_websocket.enums.ReadyState.CLOSING) return;
         long now = System.currentTimeMillis();
         if (now - lastConnectAttemptMs < RECONNECT_COOLDOWN_MS) return;
         lastConnectAttemptMs = now;
