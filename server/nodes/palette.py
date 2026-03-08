@@ -6,9 +6,10 @@ Output: block_palette (list of minecraft block ID strings)
 """
 
 import os
+import base64
 import logging
 from PIL import Image
-from google import genai
+from lib.llm_factory import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -87,97 +88,104 @@ MINECRAFT_BLOCKS = [
     "minecraft:pumpkin", "minecraft:jack_o_lantern", "minecraft:cobweb", "minecraft:flower_pot", "minecraft:campfire",
 ]
 
+_BLOCKS_STR = ', '.join(MINECRAFT_BLOCKS)
 
-def _compress_image(input_path: str, output_path: str, max_size: tuple = (1024, 1024)) -> bool:
-    """Resize and compress an image, saving to output_path. Returns True on success."""
+
+def _image_to_data_url(path: str) -> str | None:
+    """Convert a local image file to a base64 data URL for vision LLMs."""
     try:
-        with Image.open(input_path) as img:
-            img.thumbnail(max_size, Image.Resampling.LANCZOS)
-            save_params = {}
-            ext = output_path.lower().split(".")[-1]
-            if ext in ("jpg", "jpeg"):
-                if img.mode in ("RGBA", "P"):
-                    img = img.convert("RGB")
-                save_params = {"optimize": True, "quality": 70}
-            elif ext == "png":
-                save_params = {"optimize": True}
-            elif ext == "webp":
-                save_params = {"optimize": True, "quality": 70}
-            img.save(output_path, **save_params)
-        return True
+        ext = os.path.splitext(path)[1].lower()
+        mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+        mime = mime_map.get(ext, "image/jpeg")
+
+        # Resize to save tokens
+        with Image.open(path) as img:
+            img.thumbnail((512, 512), Image.Resampling.LANCZOS)
+            import io
+            buf = io.BytesIO()
+            if img.mode in ("RGBA", "P") and mime == "image/jpeg":
+                img = img.convert("RGB")
+            img.save(buf, format=mime.split("/")[1].upper().replace("JPEG", "JPEG"), quality=70)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+
+        return f"data:{mime};base64,{b64}"
     except Exception as e:
-        logger.warning(f"[palette] Failed to compress '{input_path}': {e}")
-        return False
+        logger.warning(f"[palette] Failed to encode image {path}: {e}")
+        return None
 
 
-def _analyze_images(image_paths: list[str]) -> list[str]:
-    """Send compressed images to Gemini and return a list of 15 block IDs."""
-    client = genai.Client()
-    images = []
-    for path in image_paths:
-        try:
-            images.append(Image.open(path))
-        except Exception as e:
-            logger.warning(f"[palette] Could not open image {path}: {e}")
+def _build_prompt(user_message: str, has_images: bool) -> str:
+    """Build the palette selection prompt."""
+    if has_images:
+        intro = (
+            "Look at the reference images above. I want to recreate the aesthetic "
+            "and common themes of these scenes in Minecraft."
+        )
+    else:
+        intro = (
+            f"The user wants to build: \"{user_message}\"\n"
+            f"Based on this description, imagine what it would look like."
+        )
 
-    if not images:
-        return []
-
-    prompt = f"""Look at these {len(images)} images. I want to recreate the average aesthetic and common themes of these scenes in Minecraft.
-Analyze the overall colors, textures, and prominent materials across all the provided images.
-Select exactly 15 Minecraft blocks from the specific list below that would make the best, unified architectural palette to build scenes matching this general vibe.
+    return f"""{intro}
+Analyze the overall colors, textures, and prominent materials.
+Select exactly 15 Minecraft blocks from the list below that would make the best architectural palette.
 
 ALLOWED BLOCKS:
-{', '.join(MINECRAFT_BLOCKS)}
+{_BLOCKS_STR}
 
-Output ONLY a numbered list of the 15 blocks, from 1 to 15. Do not include any intro, outro, or explanation. Only choose blocks from the allowed list."""
+Output ONLY a numbered list of 15 blocks (1-15). No intro, no explanation. Only blocks from the list above."""
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=images + [prompt],
-    )
 
+def _parse_block_list(text: str) -> list[str]:
+    """Parse a numbered list of blocks from LLM output."""
     blocks = []
-    for line in response.text.strip().splitlines():
+    for line in text.strip().splitlines():
         line = line.strip()
         if not line:
             continue
-        # Strip leading "1. " / "1) " numbering
+        # Strip "1. " / "1) " numbering
         if line[0].isdigit():
             line = line.split(".", 1)[-1].split(")", 1)[-1].strip()
-        if line:
+        # Remove backticks or quotes
+        line = line.strip("`'\"")
+        if line and line.startswith("minecraft:"):
             blocks.append(line)
     return blocks
 
 
 def extract_palette(state: dict) -> dict:
-    """Analyze reference images and extract a Minecraft block palette."""
+    """Analyze reference images (or text description) and extract a Minecraft block palette."""
     reference_images: list[str] = state.get("reference_images", [])
+    user_message = state.get("user_message", "")
     logger.info(f"[palette] Extracting palette from {len(reference_images)} images...")
 
-    if not reference_images:
-        return {"block_palette": []}
+    llm = get_llm(temperature=0.3)
 
-    # Compress images into a temp directory before sending to the LLM
-    tmp_dir = os.path.join(os.path.dirname(__file__), ".palette_tmp")
-    os.makedirs(tmp_dir, exist_ok=True)
+    # Build vision message with images, or text-only fallback
+    content_parts = []
 
-    compressed_paths = []
     for path in reference_images:
-        filename = os.path.basename(path)
-        out_path = os.path.join(tmp_dir, "compressed_" + filename)
-        if _compress_image(path, out_path):
-            compressed_paths.append(out_path)
+        data_url = _image_to_data_url(path)
+        if data_url:
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": data_url},
+            })
 
-    if not compressed_paths:
-        logger.warning("[palette] No images could be compressed; returning empty palette.")
-        return {"block_palette": []}
+    has_images = len(content_parts) > 0
+    prompt_text = _build_prompt(user_message, has_images)
+    content_parts.append({"type": "text", "text": prompt_text})
 
     try:
-        block_palette = _analyze_images(compressed_paths)
+        from langchain_core.messages import HumanMessage
+        result = llm.invoke([HumanMessage(content=content_parts)])
+        raw = result.content
+        logger.info(f"[palette] LLM raw response: {raw[:200]}...")
+        block_palette = _parse_block_list(raw)
     except Exception as e:
-        logger.error(f"[palette] AI analysis failed: {e}")
+        logger.error(f"[palette] LLM analysis failed: {e}")
         block_palette = []
 
-    logger.info(f"[palette] Got palette: {block_palette}")
+    logger.info(f"\033[32m[palette] Got {len(block_palette)} blocks: {block_palette}\033[0m")
     return {"block_palette": block_palette}

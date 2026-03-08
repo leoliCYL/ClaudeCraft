@@ -24,6 +24,7 @@ from nodes.combiner import combine_components
 from nodes.converter import convert_to_layers
 
 logger = logging.getLogger(__name__)
+THRESHOLD = 0.9
 
 
 # ---------------------------------------------------------------------------
@@ -71,10 +72,10 @@ def _build_decision(state: AgentState) -> str:
     - Otherwise -> 'generate' (run the generation pipeline)
     """
     score = state.get("rag_score", 0.0)
-    if state.get("schematic_path") and score >= 0.7:
-        logger.info(f"RAG score {score:.3f} >= 0.7 — using existing schematic")
+    if state.get("schematic_path") and score >= THRESHOLD:
+        logger.info(f"\033[32mRAG score {score:.3f} >= {THRESHOLD} — using existing schematic\033[0m")
         return "rag_hit"
-    logger.info(f"RAG score {score:.3f} < 0.7 — entering generation pipeline")
+    logger.info(f"\033[32mRAG score {score:.3f} < {THRESHOLD} — entering generation pipeline\033[0m")
     return "generate"
 
 
