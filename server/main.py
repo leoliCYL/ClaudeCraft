@@ -13,13 +13,12 @@ Run modes
 """
 
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import sys
 import logging
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
-from urllib.parse import urlparse
-from openai import OpenAI
 
 import asyncio
 import json
@@ -150,9 +149,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # Node names that carry interesting pipeline state worth printing
 _E2E_DISPLAY_NODES = {
-    "image_search": ("Reference images", "reference_images"),
-    "palette":      ("Block palette",    "block_palette"),
-    "component_planner": ("Components", "components"),
+    "image_search":       ("Reference images", "reference_images"),
+    "palette":            ("Block palette",    "block_palette"),
+    "trellis_generator":  ("Generated model",  "combined_blocks"),
 }
 
 # Simple ANSI colours for readability (no extra deps)
@@ -176,9 +175,23 @@ def _print_pipeline_step(node: str, update: dict) -> None:
         print(f"  {_DIM}(none){_RESET}")
         return
 
+    if key == "combined_blocks":
+        print(f"  {_DIM}{len(value)} total blocks in 3D grid{_RESET}")
+        if update.get('glb_path'):
+            print(f"  {_CYAN}GLB Path:{_RESET} {_DIM}{update['glb_path']}{_RESET}")
+        if update.get('obj_path'):
+            print(f"  {_CYAN}OBJ Path:{_RESET} {_DIM}{update['obj_path']}{_RESET}")
+        return
+
     if isinstance(value, list):
         for i, item in enumerate(value, 1):
-            print(f"  {_DIM}{i:>2}.{_RESET} {item}")
+            if isinstance(item, dict) and "url" in item:
+                print(f"  {_DIM}{i:>2}.{_RESET} {item['url']}")
+            elif isinstance(item, str) and item.startswith("data:"):
+                size_kb = len(item) // 1024
+                print(f"  {_DIM}{i:>2}.{_RESET} [base64 image, ~{size_kb}KB]")
+            else:
+                print(f"  {_DIM}{i:>2}.{_RESET} {item}")
     else:
         print(f"  {value}")
 
@@ -238,9 +251,9 @@ def run_e2e() -> None:
             # Show block palette summary if one was produced
             palette = final_state.get("block_palette")
             if palette:
-                print(f"\n{_DIM}── final palette ({len(palette)} blocks) ──────────{_RESET}")
-                for i, block in enumerate(palette, 1):
-                    print(f"  {i:>2}. {block}")
+                print(f"\n{_DIM}── final palette ──────────────────────────{_RESET}")
+                for layer, block in palette.items():
+                    print(f"  {layer}: {block}")
 
             print(f"\n{_DIM}──────────────────────────────────────────{_RESET}")
             chat_history = final_state.get("chat_history", chat_history)

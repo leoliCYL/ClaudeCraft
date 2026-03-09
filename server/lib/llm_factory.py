@@ -49,7 +49,7 @@ def get_llm(*, temperature: float = 0.7):
         logger.info(f"LLM: OpenAI-compatible | model={model} | base_url={base_url or 'default'}")
         return ChatOpenAI(**kwargs)
 
-    else:  # gemini (default)
+    else:  # gemini
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         api_key = os.getenv("GEMINI_API_KEY", "")

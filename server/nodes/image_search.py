@@ -11,8 +11,7 @@ Output: reference_images (list of base64 data URL strings)
 import logging
 import base64
 import httpx
-
-from duckduckgo_search import DDGS
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -43,30 +42,49 @@ def _download_as_data_url(url: str) -> str | None:
 
 
 def search_images(state: dict) -> dict:
-    """Search for reference images matching the build request."""
+    """Search for reference images matching the build request using SerpApi."""
     prompt = state.get("user_message", "")
     query = f"{prompt} minecraft build"
-    logger.info(f"\033[32m[image_search] Searching DuckDuckGo images for: {query[:60]}...\033[0m")
+    logger.info(f"\033[32m[image_search] Searching SerpApi images for: {query[:60]}...\033[0m")
 
     reference_images = []
+    api_key = os.getenv("SERPAPI_API_KEY")
+
+    if not api_key:
+        logger.error("[image_search] SERPAPI_API_KEY not found in .env")
+        return {"reference_images": []}
 
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=5))
-
-        logger.info(f"[image_search] Got {len(results)} image results from DDG")
+        # SerpApi Google Images endpoint
+        params = {
+            "engine": "google_images",
+            "q": query,
+            "api_key": api_key,
+            "num": 5
+        }
+        
+        resp = httpx.get("https://serpapi.com/search", params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        results = data.get("images_results", [])
+        logger.info(f"[image_search] Got {len(results)} image results from SerpApi")
 
         for result in results:
-            url = result.get("image", "")
+            if len(reference_images) >= 5:
+                break
+
+            url = result.get("original", "")
             if not url:
                 continue
+                
             data_url = _download_as_data_url(url)
             if data_url:
                 reference_images.append(data_url)
                 logger.info(f"[image_search] Downloaded image from {url[:60]}... ({len(data_url)//1024}KB in RAM)")
 
     except Exception as e:
-        logger.error(f"[image_search] DuckDuckGo search failed: {e}")
+        logger.error(f"[image_search] SerpApi search failed: {e}")
 
     logger.info(f"[image_search] {len(reference_images)} images in memory")
 

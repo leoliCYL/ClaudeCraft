@@ -120,6 +120,34 @@ Where <filename> is the name of the schematic they want without the .litematic e
 If they are just chatting, respond normally and concisely."""
 
 
+def component_planner_prompt(user_message: str, has_images: bool) -> str:
+    """Build the component planning prompt."""
+    if has_images:
+        intro = (
+            "Look at the reference images above. "
+            f"The user wants to build: \"{user_message}\"."
+        )
+    else:
+        intro = f"The user wants to build: \"{user_message}\"."
+
+    return f"""{intro}
+
+Break this build into 1-3 distinct 3D components that can each be generated as a separate 3D model.
+Each component should represent a visually distinct sub-object (e.g. for a castle: "tower", "wall", "gate").
+For simple objects (e.g. a tree, a car), one component is fine.
+
+Return ONLY a raw JSON array. No markdown framing, no explanations. Each element must have:
+- "name": short identifier (snake_case)
+- "description": concise description of this component as a 3D object
+- "image_query": web image search query to find a good reference photo for this component
+
+Example:
+[
+  {{"name": "tower", "description": "tall cylindrical stone tower", "image_query": "stone castle tower 3d"}},
+  {{"name": "walls", "description": "thick castle wall with battlements", "image_query": "medieval castle wall exterior"}}
+]"""
+
+
 def palette_prompt(user_message: str, has_images: bool) -> str:
     """Build the palette selection prompt."""
     if has_images:
@@ -135,9 +163,16 @@ def palette_prompt(user_message: str, has_images: bool) -> str:
 
     return f"""{intro}
 Analyze the overall colors, textures, and prominent materials.
-Select exactly 15 Minecraft blocks from the list below that would make the best architectural palette.
+Select a diverse palette of up to 15 Minecraft blocks from the list below that would best represent the colors found in the images.
+For each block you select, provide its estimated average HEX color code (e.g. "#7D7D7D").
 
 ALLOWED BLOCKS:
 {MINECRAFT_BLOCKS_STR}
 
-Output ONLY a numbered list of 15 blocks (1-15). No intro, no explanation. Only blocks from the list above."""
+Return ONLY a raw JSON object with a "palette" array of objects. No markdown framing, no explanations. It MUST exactly match this schema:
+{{
+  "palette": [
+    {{"block": "minecraft:block_id1", "hex": "#HEXCOLOR"}},
+    {{"block": "minecraft:block_id2", "hex": "#HEXCOLOR"}}
+  ]
+}}"""
